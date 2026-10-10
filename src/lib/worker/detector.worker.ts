@@ -4,6 +4,7 @@ import { heatmapsToQuad, type Detection } from '../detect/heatmap';
 import { toLuma, type Quad } from '../imaging/image';
 import { scaleQuad } from '../imaging/quad';
 import { refineQuad } from '../imaging/refine';
+import { sharpness } from '../imaging/sharpness';
 import { MODEL_INPUT } from '../detect/model';
 import type { DetectorRequest, DetectorResponse } from './protocol';
 
@@ -72,13 +73,14 @@ async function detectStill(source: Blob): Promise<{
   width: number;
   height: number;
   confidence: number;
+  sharpness: number;
 }> {
-  // Decode once; the model and the refinement both draw from this bitmap.
+  // Decode once; the model, the refinement and the blur check all draw from
+  // this bitmap.
   const full = await createImageBitmap(source, { imageOrientation: 'from-image' });
   const { width, height } = full;
   try {
     const detection = await infer(full);
-    if (!detection) return { quad: null, width, height, confidence: 0 };
 
     const scale = Math.min(1, REFINE_EDGE / Math.max(width, height));
     const w = Math.max(1, Math.round(width * scale));
@@ -88,14 +90,28 @@ async function detectStill(source: Blob): Promise<{
     if (!ctx) throw new Error('Could not create a 2D canvas context');
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(full, 0, 0, w, h);
-    const work = { data: ctx.getImageData(0, 0, w, h).data, width: w, height: h };
+    const luma = toLuma({ data: ctx.getImageData(0, 0, w, h).data, width: w, height: h });
 
-    const refined = refineQuad(toLuma(work), scaleQuad(detection.quad, w, h));
+    if (!detection) {
+      return { quad: null, width, height, confidence: 0, sharpness: sharpness(luma) };
+    }
+    const refined = refineQuad(luma, scaleQuad(detection.quad, w, h));
+    // Judge sharpness on the page itself, a little inside its edges.
+    const xs = refined.map((p) => p[0]);
+    const ys = refined.map((p) => p[1]);
+    const insetX = (Math.max(...xs) - Math.min(...xs)) * 0.08;
+    const insetY = (Math.max(...ys) - Math.min(...ys)) * 0.08;
     return {
       quad: scaleQuad(refined, width / w, height / h),
       width,
       height,
       confidence: detection.confidence,
+      sharpness: sharpness(luma, {
+        x0: Math.min(...xs) + insetX,
+        y0: Math.min(...ys) + insetY,
+        x1: Math.max(...xs) - insetX,
+        y1: Math.max(...ys) - insetY,
+      }),
     };
   } finally {
     full.close();

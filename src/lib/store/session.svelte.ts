@@ -18,6 +18,8 @@ export interface Page {
   height: number;
   spec: PageSpec;
   detected: Quad | null;
+  /** Capture sharpness (imaging/sharpness.ts), or null when not measured. */
+  sharpness: number | null;
 }
 
 function newId(): string {
@@ -42,6 +44,7 @@ class Session {
       height: stored.height,
       spec: stored.spec,
       detected: stored.detected,
+      sharpness: stored.sharpness ?? null,
     }));
     this.title = title;
     this.loaded = true;
@@ -88,6 +91,7 @@ class Session {
         width: source.width,
         height: source.height,
         detected: source.detected,
+        sharpness: source.sharpness,
         spec: { ...p.spec, quad: source.quad },
       };
       return changed;

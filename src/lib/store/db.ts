@@ -10,6 +10,8 @@ export interface StoredPage {
   spec: PageSpec;
   /** The detector's quad, so "reset crop" can return to it. */
   detected: PageSpec['quad'] | null;
+  /** Older sessions have no sharpness. */
+  sharpness?: number | null;
 }
 
 const DB_NAME = 'doc-scanner';
@@ -18,17 +20,31 @@ const META = 'meta';
 
 let opening: Promise<IDBDatabase> | null = null;
 
+/** If storage does not answer within this time, carry on without it. */
+const OPEN_TIMEOUT_MS = 4000;
+
 function open(): Promise<IDBDatabase> {
   opening ??= new Promise((resolve, reject) => {
+    // Opening can stall indefinitely (another tab holding an old version
+    // open, a pending delete). The app must still start.
+    const timer = setTimeout(() => reject(new Error('Storage did not respond')), OPEN_TIMEOUT_MS);
     const request = indexedDB.open(DB_NAME, 1);
     request.onupgradeneeded = () => {
       const db = request.result;
       db.createObjectStore(STORE, { keyPath: 'id' });
       db.createObjectStore(META);
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      clearTimeout(timer);
+      resolve(request.result);
+    };
+    request.onerror = () => {
+      clearTimeout(timer);
+      reject(request.error);
+    };
   });
+  // A failed open is retried next time rather than cached forever.
+  opening.catch(() => (opening = null));
   return opening;
 }
 

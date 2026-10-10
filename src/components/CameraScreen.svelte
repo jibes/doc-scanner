@@ -6,6 +6,7 @@
   import type { FilterId } from '../lib/imaging/filters';
   import type { Point, Quad } from '../lib/imaging/image';
   import { insetQuad } from '../lib/imaging/quad';
+  import { isBlurred } from '../lib/imaging/sharpness';
   import { defaultSpec } from '../lib/pipeline';
   import { detector } from '../lib/services';
   import { session } from '../lib/store/session.svelte';
@@ -60,6 +61,8 @@
   let steady = $state(0);
   let capturing = $state(false);
   let flash = $state(false);
+  /** The still is being taken: the phone must not move yet. */
+  let exposing = $state(false);
 
   let track: MediaStreamTrack | null = null;
   let stream: MediaStream | null = null;
@@ -208,37 +211,50 @@
 
   /* ----------------------------------------------------------- capture ---- */
 
-  async function addPhoto(source: Blob): Promise<{ id: string; found: boolean }> {
-    let result: { quad: Quad | null; width: number; height: number };
+  async function addPhoto(source: Blob): Promise<{ id: string; found: boolean; blurred: boolean }> {
+    let result: { quad: Quad | null; width: number; height: number; sharpness: number | null };
     try {
       result = await detector().still(source);
     } catch {
       const bitmap = await createImageBitmap(source);
-      result = { quad: null, width: bitmap.width, height: bitmap.height };
+      result = { quad: null, width: bitmap.width, height: bitmap.height, sharpness: null };
       bitmap.close();
     }
     const pageQuad = result.quad ?? insetQuad(result.width, result.height, 0.04);
-    const photo = { source, width: result.width, height: result.height, detected: result.quad };
+    const photo = {
+      source,
+      width: result.width,
+      height: result.height,
+      detected: result.quad,
+      sharpness: result.sharpness,
+    };
+    const blurred = isBlurred(result);
     if (retakeId && session.get(retakeId)) {
       session.replaceSource(retakeId, { ...photo, quad: pageQuad });
-      return { id: retakeId, found: result.quad !== null };
+      return { id: retakeId, found: result.quad !== null, blurred };
     }
     const page = session.add({ ...photo, spec: defaultSpec(pageQuad, defaultFilter) });
-    return { id: page.id, found: result.quad !== null };
+    return { id: page.id, found: result.quad !== null, blurred };
   }
 
   async function capture(auto = false) {
     if (capturing || !track || !video) return;
     capturing = true;
-    flash = true;
-    setTimeout(() => (flash = false), 180);
+    exposing = true;
     lastCaptured = raw;
     armed = false;
     steady = 0;
     try {
       const still = await captureStill(track, video);
-      const { id, found } = await addPhoto(still);
+      // The flash and buzz mean "done, you can move": only once the photo is
+      // actually taken, which on Android (full-sensor still) takes a moment.
+      exposing = false;
+      flash = true;
+      setTimeout(() => (flash = false), 180);
       if (navigator.vibrate) navigator.vibrate(30);
+      const { id, found, blurred } = await addPhoto(still);
+      if (blurred)
+        toast('That page came out blurred. Hold still until the flash and retake it.', 'err');
       if (retakeId) onRetaken(id);
       else if (!found && !auto) {
         toast('No page edges found. Drag the corners into place.', 'info');
@@ -247,6 +263,7 @@
     } catch (error) {
       toast(`Capture failed: ${errorMessage(error)}`, 'err');
     } finally {
+      exposing = false;
       capturing = false;
     }
   }
@@ -340,7 +357,7 @@
       {:else if detectorState === 'failed'}
         <span class="pill warn">Auto-detect unavailable — crop by hand</span>
       {:else if capturing}
-        <span class="pill">Capturing…</span>
+        <span class="pill" class:hold={exposing}>{exposing ? 'Hold still…' : 'Processing…'}</span>
       {:else if quad && autoCapture && steady > 0}
         <span class="pill">Hold steady…</span>
       {:else if !quad && cameraReady}
@@ -541,6 +558,12 @@
     border-radius: 999px;
     padding: 6px 14px;
     font-size: 13px;
+  }
+
+  .pill.hold {
+    background: rgb(245 158 11 / 85%);
+    color: #000;
+    font-weight: 600;
   }
 
   .pill.warn {

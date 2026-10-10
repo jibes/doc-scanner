@@ -191,9 +191,13 @@ export class DetectorClient {
     return response;
   }
 
-  async still(
-    source: Blob,
-  ): Promise<{ quad: Quad | null; width: number; height: number; confidence: number }> {
+  async still(source: Blob): Promise<{
+    quad: Quad | null;
+    width: number;
+    height: number;
+    confidence: number;
+    sharpness: number;
+  }> {
     const response = await this.send({ type: 'still', source });
     if (response.type !== 'still') throw new Error('Unexpected detector response');
     return response;
