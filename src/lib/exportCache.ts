@@ -39,12 +39,12 @@ let paused = false;
 let generation = 0;
 
 function worker(): ProcessorClient {
-  exporter ??= new ProcessorClient();
+  if (!exporter || exporter.dead) exporter = new ProcessorClient();
   return exporter;
 }
 
 function ocr(): OcrClient {
-  reader ??= new OcrClient();
+  if (!reader || reader.dead) reader = new OcrClient();
   return reader;
 }
 

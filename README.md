@@ -125,7 +125,8 @@ The model (4.8 MB) and the ONNX Runtime WebAssembly binary (14 MB, 3.7 MB
 gzipped) are precached by the service worker on the first visit. The OCR models
 (12.7 MB) are downloaded the first time a searchable PDF is made and cached from
 then on; turn "Make saved PDFs searchable" off in the settings to never fetch
-them.
+them. A new version takes over once every tab of the app is closed (for the
+installed app: swiped away), never under a running one.
 
 ## Using it
 
