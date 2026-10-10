@@ -1,6 +1,6 @@
 <script lang="ts">
   import { flip } from 'svelte/animate';
-  import { defaultTitle, exportPdf, pdfFilename, saveFile } from '../lib/export';
+  import { canShareFiles, defaultTitle, exportPdf, pdfFilename, saveFile } from '../lib/export';
   import { FILTERS } from '../lib/filters';
   import { haptic } from '../lib/haptics';
   import { recordHistory, updateHistory } from '../lib/history';
@@ -24,6 +24,8 @@
   let { settings, onCamera, onOpen, onSettings, onHistory }: Props = $props();
 
   const placeholder = defaultTitle();
+  /** Phones offer both: the share sheet ("open with") and a plain download. */
+  const sharing = canShareFiles();
   const title = $derived(session.title.trim() || placeholder);
 
   const commonFilter = $derived.by(() => {
@@ -74,13 +76,20 @@
    * PDF usually outlasts the one on "PDF"; the browser then refuses, and a
    * "Share" button offers a fresh tap instead of silently downloading.
    */
-  async function deliver(pdf: Blob, name: string, docTitle: string, pages: number, retry = false) {
+  async function deliver(
+    pdf: Blob,
+    name: string,
+    docTitle: string,
+    pages: number,
+    { retry = false, download = false } = {},
+  ) {
     // A second refusal, despite the fresh tap, falls back to a download.
-    const how = await saveFile(pdf, name, { deferShare: !retry });
+    const how = await saveFile(pdf, name, { deferShare: !retry, download });
     if (how === 'needs-tap') {
       toast('Your PDF is ready.', 'good', {
-        label: 'Share',
-        run: () => void deliver(pdf, name, docTitle, pages, true).catch(shareFailed),
+        label: download ? 'Download' : 'Share',
+        run: () =>
+          void deliver(pdf, name, docTitle, pages, { retry: true, download }).catch(shareFailed),
       });
       return;
     }
@@ -98,12 +107,12 @@
     toast(`Could not share the PDF: ${errorMessage(error)}`, 'err');
   }
 
-  async function save() {
+  async function save(download = false) {
     try {
       // Saved and shared PDFs carry the OCR text layer.
       const pdf = await build(true);
       idle();
-      await deliver(pdf, pdfFilename(title), title, session.pages.length);
+      await deliver(pdf, pdfFilename(title), title, session.pages.length, { download });
     } catch (error) {
       haptic('error');
       toast(`Could not create the PDF: ${errorMessage(error)}`, 'err');
@@ -363,9 +372,24 @@
     >
       <Icon name="trash" />
     </button>
-    <button class="icon grow" onclick={() => void save()} disabled={!session.pages.length}>
-      <Icon name="share" /> PDF
-    </button>
+    {#if sharing}
+      <button class="icon grow" onclick={() => void save()} disabled={!session.pages.length}>
+        <Icon name="share" /> PDF
+      </button>
+      <button
+        class="icon"
+        onclick={() => void save(true)}
+        disabled={!session.pages.length}
+        aria-label="Download PDF"
+        title="Download PDF"
+      >
+        <Icon name="download" />
+      </button>
+    {:else}
+      <button class="icon grow" onclick={() => void save(true)} disabled={!session.pages.length}>
+        <Icon name="download" /> PDF
+      </button>
+    {/if}
     <button
       class="icon primary grow"
       onclick={() => void upload()}

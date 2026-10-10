@@ -79,20 +79,33 @@ function mobile(): boolean {
  * - `cancelled`: the user closed the share sheet;
  * - `downloaded`: saved through the browser instead;
  * - `needs-tap`: only with `deferShare`. The browser refused to open the
- *   share sheet because the tap that started the export has expired (it
- *   lasts a few seconds; building a PDF takes longer). Call again from a
- *   new tap.
+ *   share sheet, or on a phone would ignore the download, because the tap
+ *   that started the export has expired (it lasts a few seconds; building a
+ *   PDF takes longer). Call again from a new tap.
  */
 export type SaveOutcome = 'shared' | 'cancelled' | 'downloaded' | 'needs-tap';
 
-/** Hand the file to the OS share sheet where possible, else download it. */
+/** Whether files can go to the OS share sheet ("open with" another app) here. */
+export function canShareFiles(): boolean {
+  try {
+    const probe = new File([''], 'probe.pdf', { type: 'application/pdf' });
+    return mobile() && !!navigator.canShare?.({ files: [probe] });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Hand the file to the OS share sheet where possible, else download it.
+ * With `download`, always save it as a file through the browser.
+ */
 export async function saveFile(
   blob: Blob,
   filename: string,
-  { deferShare = false }: { deferShare?: boolean } = {},
+  { deferShare = false, download = false }: { deferShare?: boolean; download?: boolean } = {},
 ): Promise<SaveOutcome> {
   const file = new File([blob], filename, { type: blob.type });
-  if (mobile() && navigator.canShare?.({ files: [file] })) {
+  if (!download && mobile() && navigator.canShare?.({ files: [file] })) {
     // Where the browser says so up front, do not even try: a refused share
     // can leave iOS unwilling to open the sheet on the next tap either.
     if (deferShare && navigator.userActivation && !navigator.userActivation.isActive) {
@@ -107,6 +120,10 @@ export async function saveFile(
       if (name === 'NotAllowedError' && deferShare) return 'needs-tap';
       // Fall through to a download.
     }
+  }
+  // Mobile browsers may also ignore a download without a recent tap.
+  if (deferShare && mobile() && navigator.userActivation && !navigator.userActivation.isActive) {
+    return 'needs-tap';
   }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
