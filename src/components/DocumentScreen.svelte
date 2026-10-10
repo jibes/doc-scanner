@@ -4,6 +4,7 @@
   import type { FilterId } from '../lib/imaging/filters';
   import { isConfigured, uploadDocument, waitForTask } from '../lib/paperless';
   import type { AppSettings } from '../lib/settings';
+  import { isBlurred } from '../lib/imaging/sharpness';
   import { session } from '../lib/store/session.svelte';
   import { busy, errorMessage, idle, toast } from '../lib/ui.svelte';
   import Icon from './Icon.svelte';
@@ -131,7 +132,10 @@
           <div class="frame">
             <PageCanvas {page} longEdge={520} channel="thumb-{page.id}" class="thumb" />
           </div>
-          <span class="number">{i + 1}</span>
+          <span class="number">
+            {i + 1}
+            {#if isBlurred(page)}<span class="blurred">· blurred</span>{/if}
+          </span>
         </button>
       {/each}
       <button class="tile add" onclick={onCamera} aria-label="Add pages">
@@ -275,5 +279,10 @@
   .number {
     font-size: 12px;
     color: var(--muted);
+  }
+
+  .blurred {
+    color: var(--warn);
+    font-weight: 600;
   }
 </style>

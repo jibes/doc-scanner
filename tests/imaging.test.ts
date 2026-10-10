@@ -3,7 +3,8 @@ import { estimatePaper, flattenPaper } from '../src/lib/imaging/background';
 import { boxMean, darkClassLevel, gaussian, maxFilter, minFilter } from '../src/lib/imaging/box';
 import { dilate, labelComponents, removeSmallComponents } from '../src/lib/imaging/components';
 import { applyFilter } from '../src/lib/imaging/filters';
-import { createFloat, rotateRGBA, type Quad } from '../src/lib/imaging/image';
+import { createFloat, rotateRGBA, toLuma, type Quad } from '../src/lib/imaging/image';
+import { BLURRED_BELOW, isBlurred, sharpness } from '../src/lib/imaging/sharpness';
 import { refineQuad } from '../src/lib/imaging/refine';
 import { warpQuad } from '../src/lib/imaging/resample';
 import { fill, photographedPage, px, setRect } from './helpers';
@@ -487,5 +488,53 @@ describe('morphology and level helpers', () => {
     expect(centre).toBeLessThan(0.55);
     // The plain minimum would have said black.
     expect(minFilter(img, 10).data[30 * w + 60]).toBe(0);
+  });
+});
+
+describe('sharpness', () => {
+  function textPage() {
+    const img = fill(800, 1000, [235, 235, 235]);
+    // Strokes in both orientations, like letters.
+    for (let row = 0; row < 12; row++) {
+      for (let col = 0; col < 20; col++) {
+        const x = 60 + col * 34;
+        const y = 80 + row * 70;
+        if ((row + col) % 2) softRect(img, x, y, x + 5, y + 26, 30, 1);
+        else softRect(img, x, y + 10, x + 22, y + 15, 30, 1);
+      }
+    }
+    return toLuma(img);
+  }
+
+  function motionBlur(src: ReturnType<typeof toLuma>, n: number) {
+    const out = createFloat(src.width, src.height);
+    for (let y = 0; y < src.height; y++) {
+      for (let x = 0; x < src.width; x++) {
+        let s = 0;
+        let c = 0;
+        for (let k = 0; k < n; k++) {
+          const xx = Math.round(x + 0.8 * (k - n / 2));
+          const yy = Math.round(y + 0.6 * (k - n / 2));
+          if (xx >= 0 && yy >= 0 && xx < src.width && yy < src.height) {
+            s += src.data[yy * src.width + xx];
+            c++;
+          }
+        }
+        out.data[y * src.width + x] = s / c;
+      }
+    }
+    return out;
+  }
+
+  it('scores a sharp page above the threshold and a shaken one below', () => {
+    const page = textPage();
+    expect(sharpness(page)).toBeGreaterThan(BLURRED_BELOW);
+    expect(sharpness(motionBlur(page, 14))).toBeLessThan(BLURRED_BELOW);
+  });
+
+  it('flags pages by their stored score', () => {
+    expect(isBlurred({ sharpness: 1.2 })).toBe(true);
+    expect(isBlurred({ sharpness: 2.4 })).toBe(false);
+    expect(isBlurred({ sharpness: null })).toBe(false);
   });
 });

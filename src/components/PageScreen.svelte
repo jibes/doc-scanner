@@ -1,5 +1,6 @@
 <script lang="ts">
   import { DEFAULT_ADJUSTMENTS, type Adjustments, type FilterId } from '../lib/imaging/filters';
+  import { isBlurred } from '../lib/imaging/sharpness';
   import { session, type Page } from '../lib/store/session.svelte';
   import { FILTERS } from '../lib/filters';
   import Icon from './Icon.svelte';
@@ -77,6 +78,13 @@
       <Icon name="right" />
     </button>
   </header>
+
+  {#if isBlurred(page)}
+    <div class="blur-banner" role="status">
+      <span>This photo is blurred; text may come out broken.</span>
+      <button onclick={onRetake}>Retake</button>
+    </div>
+  {/if}
 
   <div class="viewport">
     {#key page.id}
@@ -185,6 +193,23 @@
 </section>
 
 <style>
+  .blur-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    background: rgb(245 158 11 / 15%);
+    border-bottom: 1px solid rgb(245 158 11 / 40%);
+    color: var(--warn);
+    font-size: 13px;
+  }
+
+  .blur-banner button {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
   .viewport {
     position: relative;
     flex: 1;

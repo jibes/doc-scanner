@@ -52,5 +52,7 @@ export type DetectorResponse =
       width: number;
       height: number;
       confidence: number;
+      /** See imaging/sharpness.ts; low means blurred. */
+      sharpness: number;
     }
   | { type: 'error'; id: number; message: string };
