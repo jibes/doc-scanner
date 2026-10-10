@@ -130,9 +130,19 @@
         bytes: pdf.size,
         pdf,
         outcome: 'pending',
+        taskId: task,
       });
       busy('Paperless is processing it…');
-      const result = await waitForTask(settings.paperless, task);
+      let result: Awaited<ReturnType<typeof waitForTask>>;
+      try {
+        result = await waitForTask(settings.paperless, task);
+      } catch (error) {
+        // The file is in Paperless; only its status could not be read. The
+        // entry stays pending and History checks again later.
+        haptic('success');
+        offerNewDocument(`Uploaded, but its status could not be checked: ${errorMessage(error)}`);
+        return;
+      }
       idle();
       void updateHistory({ ...entry, outcome: result.outcome });
       if (result.outcome === 'failure') {
@@ -142,9 +152,11 @@
       }
       haptic('success');
       offerNewDocument(
-        result.outcome === 'success'
-          ? 'Filed in Paperless.'
-          : 'Uploaded; Paperless is still processing.',
+        result.duplicate
+          ? 'Already in Paperless.'
+          : result.outcome === 'success'
+            ? 'Filed in Paperless.'
+            : 'Uploaded; Paperless is still processing.',
       );
     } catch (error) {
       haptic('error');
