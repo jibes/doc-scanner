@@ -205,7 +205,7 @@ export function estimatePaper(src: RGBAImage): PaperGrid {
 }
 
 /** Long edge of the working copy the paper analysis runs on. */
-const SURFACE_EDGE = 1200;
+const SURFACE_EDGE = 1000;
 /** Closing radius on the working copy, as a fraction of its long edge. */
 const SURFACE_RADIUS = 0.004;
 /** Relative step (per channel) across 2 px of the closed page that can be a printed boundary. */
@@ -226,6 +226,14 @@ const SHADOW_SPREAD = 0.5;
 const MODEL_WINDOW = 0.05;
 /** Width of the border strip in which a region is taken for a grazed table edge. */
 const BORDER_BAND = 0.012;
+/**
+ * A content area is one flat colour when FLAT_SHARE of it lies within
+ * FLAT_SPREAD (relative) of its most common brightness, in a histogram of
+ * FLAT_BINS steps from black to paper white.
+ */
+const FLAT_BINS = 128;
+const FLAT_SPREAD = 0.03;
+const FLAT_SHARE = 0.7;
 /** Non-paper regions smaller than this (fraction of the long edge, squared) are ink, not areas. */
 const REGION_EDGE = 0.012;
 
@@ -241,6 +249,10 @@ export interface PaperAnalysis {
   surface: PaperGrid;
   /** Per working-copy pixel (`surface.cols` x `surface.rows`): PAPER, TINT or PICTURE. */
   regions: Uint8Array;
+  /** Per working-copy pixel: which content area it belongs to (0 = none). */
+  regionIds: Int32Array;
+  /** Per content area: 1 if it is one flat colour (a panel, band or tint), not a photo. */
+  flat: Uint8Array;
   /** Mean photographed colour of the paper, 0..255. */
   paper: [number, number, number];
 }
@@ -582,7 +594,12 @@ export function analysePaper(src: RGBAImage): PaperAnalysis {
     pb += closed[2][i];
     count++;
   }
-  const filled = pushPull(closed, weight, w, h);
+  const filled = pushPull(
+    closed.map((p) => new Float32Array(p)),
+    weight,
+    w,
+    h,
+  );
   // Smoothed, but first eroded a little more than the smoothing reaches: at
   // a hard shadow edge the surface then steps on the lit side, where too dark
   // a surface only clips paper to white, instead of on the shadowed side,
@@ -608,9 +625,20 @@ export function analysePaper(src: RGBAImage): PaperAnalysis {
   const sumL = new Float64Array(m);
   const sumL2 = new Float64Array(m);
   const sumS = new Float64Array(m);
+  // Flatness on the closed page, where dark lettering is wiped out: a
+  // histogram of brightness relative to the paper per area. A colour panel
+  // or band is one flat colour with some lettering on it, so most of it sits
+  // in one narrow peak; a photo or a gradient spreads out.
+  const slot = new Int32Array(m).fill(-1);
+  let slots = 0;
+  for (let l = 1; l < m; l++) if (areaLabels.areas[l] >= minArea) slot[l] = slots++;
+  const hist = new Uint32Array(slots * FLAT_BINS);
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     const l = areaLabels.labels[i];
     if (!l || areaLabels.areas[l] < minArea) continue;
+    const c =
+      L(i) / Math.max(1, 0.2126 * rgb[i * 3] + 0.7152 * rgb[i * 3 + 1] + 0.0722 * rgb[i * 3 + 2]);
+    hist[slot[l] * FLAT_BINS + Math.min(FLAT_BINS - 1, Math.floor(c * (FLAT_BINS - 1)))]++;
     const r = Math.min(1, small.data[p] / Math.max(1, rgb[i * 3]));
     const g = Math.min(1, small.data[p + 1] / Math.max(1, rgb[i * 3 + 1]));
     const b = Math.min(1, small.data[p + 2] / Math.max(1, rgb[i * 3 + 2]));
@@ -633,6 +661,7 @@ export function analysePaper(src: RGBAImage): PaperAnalysis {
     }
   }
   const kind = new Uint8Array(m);
+  const flat = new Uint8Array(m);
   for (let l = 1; l < m; l++) {
     const a = areaLabels.areas[l];
     if (a < minArea || (touches[l] && inBand[l] >= 0.9 * a)) continue;
@@ -640,13 +669,29 @@ export function analysePaper(src: RGBAImage): PaperAnalysis {
     const std = Math.sqrt(Math.max(0, sumL2[l] / a - mean * mean));
     const sat = sumS[l] / a;
     kind[l] = sat > 0.06 || mean < 0.75 || std > 0.1 ? PICTURE : TINT;
+    const base = slot[l] * FLAT_BINS;
+    let peak = 0;
+    for (let k = 1; k < FLAT_BINS; k++) if (hist[base + k] > hist[base + peak]) peak = k;
+    const width = Math.max(2, Math.round(peak * FLAT_SPREAD));
+    let near = 0;
+    for (let k = Math.max(0, peak - width); k <= Math.min(FLAT_BINS - 1, peak + width); k++) {
+      near += hist[base + k];
+    }
+    flat[l] = near >= FLAT_SHARE * a ? 1 : 0;
   }
   const regions = new Uint8Array(n);
-  for (let i = 0; i < n; i++) regions[i] = kind[areaLabels.labels[i]];
+  const regionIds = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const l = areaLabels.labels[i];
+    regions[i] = kind[l];
+    if (kind[l]) regionIds[i] = l;
+  }
 
   return {
     surface: { cols: w, rows: h, block: factor, rgb },
     regions,
+    regionIds,
+    flat,
     paper: count ? [pr / count, pg / count, pb / count] : [255, 255, 255],
   };
 }
