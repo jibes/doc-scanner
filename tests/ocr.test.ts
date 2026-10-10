@@ -102,14 +102,14 @@ describe('recognition', () => {
     for (const w of [50, 300, 700, 1500]) expect(recognitionWidth(w)).toBeGreaterThanOrEqual(w);
   });
 
-  it('crops, scales to 48 px and pads with white', () => {
+  it('crops, scales to 48 px and pads with mid-grey like PaddleOCR', () => {
     const img = fill(400, 100, [0, 0, 0]);
     const input = recognitionInput(img, { x0: 0, y0: 0, x1: 192, y1: 48, score: 1 });
     expect(input.textWidth).toBe(192);
     expect(input.width).toBe(224);
     expect(input.tensor.length).toBe(3 * REC_HEIGHT * 224);
     expect(input.tensor[0]).toBeCloseTo(-1); // black text area
-    expect(input.tensor[223]).toBe(1); // padding is white paper
+    expect(input.tensor[223]).toBe(0); // padding is 0 after scaling
   });
 
   it('decodes CTC output, collapsing repeats and blanks', () => {

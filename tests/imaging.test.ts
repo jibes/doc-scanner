@@ -295,6 +295,32 @@ describe('refineQuad', () => {
     }
   });
 
+  it('snaps edges the detector placed one pixel off', () => {
+    // A page from (100, 80) to (300, 400); the guess sits 1 px outside it.
+    const img = createFloat(400, 500);
+    for (let y = 0; y < 500; y++)
+      for (let x = 0; x < 400; x++)
+        img.data[y * 400 + x] = x >= 100 && x < 300 && y >= 80 && y < 400 ? 0.9 : 0.25;
+    const truth: Quad = [
+      [100, 80],
+      [300, 80],
+      [300, 400],
+      [100, 400],
+    ];
+    const rough: Quad = [
+      [99, 79],
+      [301, 79],
+      [301, 401],
+      [99, 401],
+    ];
+    const refined = refineQuad(img, rough);
+    for (let i = 0; i < 4; i++) {
+      expect(Math.hypot(refined[i][0] - truth[i][0], refined[i][1] - truth[i][1])).toBeLessThan(
+        0.75,
+      );
+    }
+  });
+
   it('keeps the input when there is no edge to find', () => {
     const flat = createFloat(200, 200);
     flat.data.fill(0.5);

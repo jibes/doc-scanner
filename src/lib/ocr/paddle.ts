@@ -286,7 +286,7 @@ export function recognitionWidth(width: number): number {
 
 /**
  * A text box cropped and scaled to the recogniser's height, padded on the
- * right with blank paper to a bucketed width (see `recognitionWidth`).
+ * right to a bucketed width (see `recognitionWidth`).
  * `width` is the padded input width; `textWidth` the part holding the line.
  */
 export function recognitionInput(
@@ -302,8 +302,9 @@ export function recognitionInput(
   const width = recognitionWidth(textWidth);
   const crop = sampleLine(image, box.x0, cw, yl, yr, ch, textWidth, REC_HEIGHT);
   const plane = width * REC_HEIGHT;
-  // Start as white paper (1.0 after scaling), then copy the line in.
-  const tensor = new Float32Array(3 * plane).fill(1);
+  // Padding is 0 after scaling (mid-grey), as in PaddleOCR's own
+  // preprocessing: white padding makes the model misread or drop text.
+  const tensor = new Float32Array(3 * plane);
   for (let y = 0; y < REC_HEIGHT; y++) {
     for (let x = 0; x < textWidth; x++) {
       const i = y * width + x;
