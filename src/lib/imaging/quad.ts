@@ -127,8 +127,9 @@ export function fallbackQuad(width: number, height: number): Quad {
 export function cropShapeUnknown(q: Quad, width: number, height: number): boolean {
   const fallback = fallbackQuad(width, height);
   if (q.every((p, i) => distance(p, fallback[i]) < 0.5)) return true;
-  const tol = 0.5;
-  return q.some(([x, y]) => x <= tol || y <= tol || x >= width - tol || y >= height - tol);
+  // Clipped corners lie on the border; a corner just past it is the page's own.
+  const on = (v: number, edge: number) => Math.abs(v - edge) <= 0.5;
+  return q.some(([x, y]) => on(x, 0) || on(y, 0) || on(x, width) || on(y, height));
 }
 
 export function fullQuad(width: number, height: number): Quad {

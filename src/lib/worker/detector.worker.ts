@@ -104,29 +104,44 @@ function findPage(
     detection &&
     (!search || (modelOk && quadArea(search.quad) < quadArea(modelSmall!) * MIN_GROWTH))
   ) {
-    // The model may put a corner past the photo's edge for a page that runs off it.
-    const quad = clipToFrame(model, w, h);
-    return {
-      quad,
-      confidence: detection.confidence,
-      source: 'model',
-      offFrame: quad.some((p, i) => p[0] !== model[i][0] || p[1] !== model[i][1]),
-    };
+    return { ...fitFrame(model, w, h), confidence: detection.confidence, source: 'model' };
   }
   if (!search) return null;
-  const quad = clipToFrame(
+  const fitted = fitFrame(
     refineQuad(luma, scaleQuad(search.quad, 1 / toPlanes), EDGE_REFINE_REACH),
     w,
     h,
   );
   return {
-    quad,
+    quad: fitted.quad,
     // The edge search has no calibrated confidence; report the model's
     // when it agreed on the page at all.
     confidence: detection && modelOk ? detection.confidence : 0.5,
     source: 'edges',
-    offFrame: search.offFrame,
+    // A side on the frame's border (the page runs off there) or a clipped corner.
+    offFrame: fitted.offFrame || (search.offFrame && onBorder(fitted.quad, w, h)),
   };
+}
+
+/** Corners this far past the photo's edge (fraction of its long edge) are left as they are. */
+const FRAME_SLACK = 0.02;
+
+/**
+ * A page quad with corners well outside the photo is cut to the part in
+ * view (detect/quadSearch.ts clipToFrame). One just past the edge is kept:
+ * the warp repeats the edge pixels for that sliver, which costs less than
+ * cutting the page's corner off.
+ */
+function fitFrame(q: Quad, w: number, h: number): { quad: Quad; offFrame: boolean } {
+  const slack = FRAME_SLACK * Math.max(w, h);
+  if (q.every(([x, y]) => x >= -slack && y >= -slack && x <= w + slack && y <= h + slack)) {
+    return { quad: q, offFrame: false };
+  }
+  return { quad: clipToFrame(q, w, h), offFrame: true };
+}
+
+function onBorder(q: Quad, w: number, h: number): boolean {
+  return q.some(([x, y]) => x <= 0.5 || y <= 0.5 || x >= w - 0.5 || y >= h - 0.5);
 }
 
 async function detectStill(source: Blob): Promise<StillResult> {
