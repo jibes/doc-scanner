@@ -209,9 +209,9 @@ export function estimatePaper(src: RGBAImage): PaperGrid {
  * which also removes a colour cast from warm light or yellowed paper.
  */
 /** Long edge of the working copy the fine paper surface is computed on. */
-const SURFACE_EDGE = 800;
+const SURFACE_EDGE = 1200;
 /** Closing radius on the working copy, as a fraction of its long edge. */
-const SURFACE_RADIUS = 0.012;
+const SURFACE_RADIUS = 0.004;
 
 function sampleGrid(grid: PaperGrid, x: number, y: number, c: number): number {
   const { cols, rows, block, rgb } = grid;
@@ -265,7 +265,7 @@ export function estimatePaperSurface(src: RGBAImage, coarse = estimatePaper(src)
       const fineLuma = 0.2126 * fine[0] + 0.7152 * fine[1] + 0.0722 * fine[2];
       const roughLuma = 0.2126 * rough[0] + 0.7152 * rough[1] + 0.0722 * rough[2];
       const ratio = fineLuma / Math.max(1, roughLuma);
-      const t = Math.min(1, Math.max(0, (ratio - 0.6) / 0.15));
+      const t = Math.min(1, Math.max(0, (ratio - 0.4) / 0.15));
       const trust = t * t * (3 - 2 * t);
       for (let c = 0; c < 3; c++) rgb[i * 3 + c] = trust * fine[c] + (1 - trust) * rough[c];
     }
