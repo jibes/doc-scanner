@@ -60,9 +60,9 @@
   );
 
   function applyToAll() {
-    session.applyToAll({ filter, adjustments: adj });
+    const undo = session.applyToAll({ filter, adjustments: adj });
     haptic('tick');
-    toast(`Applied to all ${session.pages.length} pages.`, 'good');
+    toast(`Applied to all ${session.pages.length} pages.`, 'good', { label: 'Undo', run: undo });
   }
 
   /* Swipe between pages. */
