@@ -11,11 +11,10 @@ import {
 export type { HistoryEntry };
 
 /** Record a finished document; returns the entry so it can be updated later. */
-export async function recordHistory(
-  entry: Omit<HistoryEntry, 'id' | 'createdAt'>,
-): Promise<HistoryEntry> {
+/** Add an entry; it is saved in the background, so a slow store never holds up the caller. */
+export function recordHistory(entry: Omit<HistoryEntry, 'id' | 'createdAt'>): HistoryEntry {
   const full: HistoryEntry = { ...entry, id: crypto.randomUUID(), createdAt: Date.now() };
-  await addHistory(full);
+  void addHistory(full);
   return full;
 }
 
@@ -36,7 +35,7 @@ export async function refreshPendingUploads(
         const result = await check(config, entry.taskId!);
         if (result.outcome === 'pending') return null;
         const updated: HistoryEntry = { ...entry, outcome: storedOutcome(result.outcome) };
-        await updateHistory(updated);
+        await updateHistory(updated, { onlyIfPresent: true });
         return updated;
       } catch {
         return null;

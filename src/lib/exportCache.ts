@@ -114,10 +114,15 @@ async function encode(page: Page, settings: AppSettings, text: boolean): Promise
       ocrEdge: withText ? OCR_EDGE : undefined,
     })
     .then((result) => {
-      let words: Promise<OcrWord[]> | null = null;
+      const entry: EncodedPage = {
+        image: result.image,
+        width: result.width,
+        height: result.height,
+        words: null,
+      };
       if (result.ocr) {
         const toPage = result.width / result.ocr.width;
-        words = recognise(result.ocr)
+        entry.words = recognise(result.ocr)
           .then((found) =>
             found.map((w) => ({
               ...w,
@@ -127,14 +132,12 @@ async function encode(page: Page, settings: AppSettings, text: boolean): Promise
               y1: w.y1 * toPage,
             })),
           )
-          .catch(() => []);
+          .catch(() => {
+            // This export goes out without text; the next one tries again.
+            if (ready.get(k) === entry) ready.set(k, { ...entry, words: null });
+            return [];
+          });
       }
-      const entry: EncodedPage = {
-        image: result.image,
-        width: result.width,
-        height: result.height,
-        words,
-      };
       ready.set(k, entry);
       return entry;
     })

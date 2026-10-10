@@ -66,11 +66,26 @@ function connect(): Promise<IDBDatabase> {
   if (connection) return connection;
   const current: Promise<IDBDatabase> = new Promise((resolve, reject) => {
     let settled = false;
+    let blocked = false;
     let attempts = 0;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    // After the last attempt, an open that is not merely blocked by another
+    // tab is given up on, so callers fail instead of waiting forever.
+    const giveUp = () => {
+      if (settled || blocked) return;
+      settled = true;
+      reject(new Error('Storage did not respond'));
+    };
     const attempt = () => {
       attempts++;
       const request = indexedDB.open(DB_NAME, DB_VERSION);
+      // Another tab still runs an older version of the app and holds the
+      // database open; the upgrade waits until that tab closes.
+      request.onblocked = () => {
+        if (blocked) return;
+        blocked = true;
+        onBlocked?.();
+      };
       request.onupgradeneeded = (event) => {
         const db = request.result;
         if (event.oldVersion < 1) {
@@ -107,7 +122,7 @@ function connect(): Promise<IDBDatabase> {
         clearTimeout(retry);
         reject(request.error);
       };
-      if (attempts < OPEN_ATTEMPTS) retry = setTimeout(attempt, OPEN_TIMEOUT_MS);
+      retry = setTimeout(attempts < OPEN_ATTEMPTS ? attempt : giveUp, OPEN_TIMEOUT_MS);
     };
     attempt();
   });
@@ -131,6 +146,13 @@ function moveSourcesOut(tx: IDBTransaction): void {
     }
     at.continue();
   };
+}
+
+let onBlocked: (() => void) | null = null;
+
+/** Called once if opening waits on another tab running an older version. */
+export function whenBlocked(listener: () => void): void {
+  onBlocked = listener;
 }
 
 function forget(stale: Promise<IDBDatabase>): void {
@@ -178,29 +200,34 @@ function attempt<T>(
   });
 }
 
+/** How long a write waits for a slow open before it is reported as failed. */
+const WRITE_TIMEOUT_MS = 30_000;
+
 /**
  * Run one action in its own transaction over `stores`. Reads give up after
- * OPEN_TIMEOUT_MS so the app can start; writes wait for storage, so they
- * land once a slow open finishes. A lost connection is reopened once (every
+ * OPEN_TIMEOUT_MS so the app can start; writes wait longer, so they land
+ * once a slow open finishes, but are reported as failed rather than hanging
+ * when storage never answers. A lost connection is reopened once (every
  * action here is idempotent, so repeating it is safe).
  */
 async function runAll<T>(
   stores: string[],
   mode: IDBTransactionMode,
   action: Action<T>,
-  timeoutMs = mode === 'readonly' ? OPEN_TIMEOUT_MS : Infinity,
+  timeoutMs = mode === 'readonly' ? OPEN_TIMEOUT_MS : WRITE_TIMEOUT_MS,
 ): Promise<T | undefined> {
-  const bounded = (pending: Promise<IDBDatabase>) =>
+  const bounded = <V>(pending: Promise<V>) =>
     Number.isFinite(timeoutMs) ? withTimeout(pending, timeoutMs) : pending;
   const opened = connect();
   const db = await bounded(opened);
   try {
-    return await attempt(db, stores, mode, action);
+    // WebKit can also stall a transaction, not just the open.
+    return await bounded(attempt(db, stores, mode, action));
   } catch (error) {
     if (!connectionLost(error)) throw error;
     forget(opened);
     db.close();
-    return attempt(await bounded(connect()), stores, mode, action);
+    return bounded(attempt(await bounded(connect()), stores, mode, action));
   }
 }
 
@@ -361,9 +388,22 @@ export async function addHistory(entry: HistoryEntry): Promise<void> {
   }
 }
 
-export async function updateHistory(entry: HistoryEntry): Promise<void> {
+/**
+ * Save an entry. With `onlyIfPresent`, an entry the user has removed in the
+ * meantime stays removed (for results that arrive late).
+ */
+export async function updateHistory(
+  entry: HistoryEntry,
+  { onlyIfPresent = false } = {},
+): Promise<void> {
   try {
-    await run(HISTORY, 'readwrite', (s) => s.put(entry));
+    await run(HISTORY, 'readwrite', (s) => {
+      if (!onlyIfPresent) return s.put(entry);
+      const existing = s.getKey(entry.id);
+      existing.onsuccess = () => {
+        if (existing.result !== undefined) s.put(entry);
+      };
+    });
   } catch {
     // See above.
   }
