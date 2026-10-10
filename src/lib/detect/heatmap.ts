@@ -37,7 +37,6 @@ export function heatmapsToQuad(heat: Float32Array, size: number): Detection | nu
       if (v >= HEAT_THRESHOLD) mask[i] = 1;
     }
     if (peak < HEAT_THRESHOLD) return null;
-    confidence = Math.min(confidence, peak);
 
     const { labels, areas } = labelComponents(mask, size, size);
     let best = 0;
@@ -46,13 +45,18 @@ export function heatmapsToQuad(heat: Float32Array, size: number): Detection | nu
     let sx = 0;
     let sy = 0;
     let sw = 0;
+    // The peak of the blob used, not of the channel: a strong stray blob
+    // elsewhere says nothing about how sure the chosen corner is.
+    let blobPeak = 0;
     for (let i = 0; i < plane; i++) {
       if (labels[i] !== best) continue;
       const w = heat[offset + i];
       sx += ((i % size) + 0.5) * w;
       sy += (Math.floor(i / size) + 0.5) * w;
       sw += w;
+      if (w > blobPeak) blobPeak = w;
     }
+    confidence = Math.min(confidence, blobPeak);
     points.push([sx / sw / size, sy / sw / size]);
   }
 
