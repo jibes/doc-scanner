@@ -5,15 +5,42 @@
  */
 import { labelComponents } from '../imaging/components';
 import type { RGBAImage } from '../imaging/image';
-import { resize } from '../imaging/resample';
 
-/** A text region in image pixels. */
+/**
+ * A text line in image pixels. `x0..x1, y0..y1` encloses it; when `yl`, `yr`
+ * and `height` are given, the line runs (slightly tilted) from centre height
+ * `yl` at `x0` to `yr` at `x1` and is `height` tall.
+ */
 export interface TextBox {
   x0: number;
   y0: number;
   x1: number;
   y1: number;
   score: number;
+  yl?: number;
+  yr?: number;
+  height?: number;
+}
+
+/** The line's centre at `x0` and `x1`, and its height. */
+function lineOf(box: TextBox): { yl: number; yr: number; height: number } {
+  const mid = (box.y0 + box.y1) / 2;
+  return { yl: box.yl ?? mid, yr: box.yr ?? mid, height: box.height ?? box.y1 - box.y0 };
+}
+
+/** Scale a box from detector to image pixels. */
+export function scaleBox(box: TextBox, sx: number, sy: number): TextBox {
+  const line = lineOf(box);
+  return {
+    x0: box.x0 * sx,
+    x1: box.x1 * sx,
+    y0: box.y0 * sy,
+    y1: box.y1 * sy,
+    score: box.score,
+    yl: line.yl * sy,
+    yr: line.yr * sy,
+    height: line.height * sy,
+  };
 }
 
 /** A recognised word with its box in image pixels. */
@@ -107,6 +134,25 @@ export function detectionBoxes(
     }
   }
 
+  // Each region's vertical extent per column, to follow tilted lines.
+  const colStart = new Int32Array(n);
+  let columns = 0;
+  for (let l = 1; l < n; l++) {
+    colStart[l] = columns;
+    if (maxX[l] >= 0) columns += maxX[l] - minX[l] + 1;
+  }
+  const colTop = new Int32Array(columns).fill(height);
+  const colBottom = new Int32Array(columns).fill(-1);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const l = labels[y * width + x];
+      if (!l) continue;
+      const c = colStart[l] + x - minX[l];
+      if (y < colTop[c]) colTop[c] = y;
+      if (y > colBottom[c]) colBottom[c] = y;
+    }
+  }
+
   const boxes: TextBox[] = [];
   for (let l = 1; l < n; l++) {
     if (!areas[l]) continue;
@@ -115,13 +161,26 @@ export function detectionBoxes(
     if (Math.min(w, h) < options.minSize) continue;
     const score = sum[l] / areas[l];
     if (score < options.boxThreshold) continue;
-    const grow = (w * h * options.unclip) / (2 * (w + h));
+    const line = fitLine(colTop, colBottom, colStart[l], w);
+    let x0 = minX[l] + line.from;
+    let x1 = minX[l] + line.to + 1;
+    const lw = x1 - x0;
+    const grow = (lw * line.height * options.unclip) / (2 * (lw + line.height));
+    const half = line.height / 2 + grow;
+    x0 = Math.max(0, x0 - grow);
+    x1 = Math.min(width, x1 + grow);
+    // Centre heights at the grown ends.
+    const yl = line.centre(x0 - minX[l]);
+    const yr = line.centre(x1 - minX[l]);
     boxes.push({
-      x0: Math.max(0, minX[l] - grow),
-      y0: Math.max(0, minY[l] - grow),
-      x1: Math.min(width, maxX[l] + 1 + grow),
-      y1: Math.min(height, maxY[l] + 1 + grow),
+      x0,
+      y0: Math.max(0, Math.min(yl, yr) - half),
+      x1,
+      y1: Math.min(height, Math.max(yl, yr) + half),
       score,
+      yl,
+      yr,
+      height: half * 2,
     });
   }
   // Reading order: top to bottom, then left to right within a line.
@@ -130,6 +189,61 @@ export function detectionBoxes(
     return sameLine ? a.x0 - b.x0 : a.y0 - b.y0;
   });
   return boxes;
+}
+
+/**
+ * A straight centre line through a region's columns. The height is the
+ * upper-quartile column height, and columns much taller than that, or far off the
+ * line, are left out of the fit and trimmed from the ends: a smudge or a
+ * punch-hole shadow touching a line would otherwise make its box twice as
+ * tall and the text in it too small to read.
+ */
+function fitLine(top: Int32Array, bottom: Int32Array, start: number, w: number) {
+  const heights: number[] = [];
+  for (let i = 0; i < w; i++) {
+    if (bottom[start + i] >= 0) heights.push(bottom[start + i] - top[start + i] + 1);
+  }
+  heights.sort((a, b) => a - b);
+  // Upper quartile: x-height letters make many columns short, while a blob
+  // at one end of the line is only a minority of them.
+  const height = heights[Math.floor(heights.length * 0.75)] ?? 1;
+  const usable = (i: number) => {
+    const b = bottom[start + i];
+    return b >= 0 && b - top[start + i] + 1 <= height * 1.4;
+  };
+  const fit = (exclude: (i: number) => boolean) => {
+    let n = 0;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    for (let i = 0; i < w; i++) {
+      if (!usable(i) || exclude(i)) continue;
+      const c = (top[start + i] + bottom[start + i]) / 2;
+      n++;
+      sx += i;
+      sy += c;
+      sxx += i * i;
+      sxy += i * c;
+    }
+    if (n === 0) return null;
+    const det = n * sxx - sx * sx;
+    // Text lines are close to level; anything steeper is a bad fit.
+    const slope = n > 1 && det > 0 ? Math.max(-0.2, Math.min(0.2, (n * sxy - sx * sy) / det)) : 0;
+    return { slope, intercept: (sy - slope * sx) / n };
+  };
+  let line = fit(() => false) ?? { slope: 0, intercept: (top[start] + bottom[start]) / 2 };
+  const off = (i: number) =>
+    Math.abs((top[start + i] + bottom[start + i]) / 2 - (line.intercept + line.slope * i));
+  // One refit without columns off the line (descenders, specks).
+  line = fit((i) => off(i) > height * 0.35) ?? line;
+  const good = (i: number) => usable(i) && off(i) <= height * 0.5;
+  let from = 0;
+  let to = w - 1;
+  while (from < to && !good(from)) from++;
+  while (to > from && !good(to)) to--;
+  const { slope, intercept } = line;
+  return { height, from, to, centre: (i: number) => intercept + slope * i };
 }
 
 /* ---------------------------------------------------------- recognition ---- */
@@ -159,18 +273,14 @@ export function recognitionInput(
   image: RGBAImage,
   box: TextBox,
 ): { tensor: Float32Array; width: number; textWidth: number; crop: RGBAImage } {
-  const x0 = Math.max(0, Math.floor(box.x0));
-  const y0 = Math.max(0, Math.floor(box.y0));
-  const x1 = Math.min(image.width, Math.ceil(box.x1));
-  const y1 = Math.min(image.height, Math.ceil(box.y1));
-  const cw = Math.max(1, x1 - x0);
-  const ch = Math.max(1, y1 - y0);
+  const cw = Math.max(1, box.x1 - box.x0);
+  const { yl, yr, height: ch } = lineOf(box);
   const textWidth = Math.max(
     REC_HEIGHT / 2,
-    Math.min(REC_MAX_WIDTH, Math.round((REC_HEIGHT * cw) / ch)),
+    Math.min(REC_MAX_WIDTH, Math.round((REC_HEIGHT * cw) / Math.max(1, ch))),
   );
   const width = recognitionWidth(textWidth);
-  const crop = resize(cropImage(image, x0, y0, cw, ch), textWidth, REC_HEIGHT);
+  const crop = sampleLine(image, box.x0, cw, yl, yr, ch, textWidth, REC_HEIGHT);
   const plane = width * REC_HEIGHT;
   // Start as white paper (1.0 after scaling), then copy the line in.
   const tensor = new Float32Array(3 * plane).fill(1);
@@ -187,13 +297,68 @@ export function recognitionInput(
   return { tensor, width, textWidth, crop };
 }
 
-function cropImage(image: RGBAImage, x0: number, y0: number, w: number, h: number): RGBAImage {
-  const data = new Uint8ClampedArray(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    const from = ((y0 + y) * image.width + x0) * 4;
-    data.set(image.data.subarray(from, from + w * 4), y * w * 4);
+/**
+ * Sample a (possibly tilted) line into an `outW` × `outH` image: columns
+ * follow the line, rows are straight up and down (a shear, which is the same
+ * as a rotation at these small angles). Each output pixel averages a small
+ * grid of bilinear samples, so shrinking does not alias. Outside the image
+ * is white paper.
+ */
+function sampleLine(
+  image: RGBAImage,
+  x0: number,
+  w: number,
+  yl: number,
+  yr: number,
+  h: number,
+  outW: number,
+  outH: number,
+): RGBAImage {
+  const { width: iw, height: ih, data: src } = image;
+  const data = new Uint8ClampedArray(outW * outH * 4);
+  const fx = w / outW;
+  const fy = h / outH;
+  const k = Math.max(1, Math.min(4, Math.ceil(Math.max(fx, fy))));
+  const rgb = [0, 0, 0];
+  const sample = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x > iw - 1 || y > ih - 1) {
+      rgb[0] += 255;
+      rgb[1] += 255;
+      rgb[2] += 255;
+      return;
+    }
+    const xi = Math.min(iw - 2, Math.floor(x));
+    const yi = Math.min(ih - 2, Math.floor(y));
+    const ax = x - xi;
+    const ay = y - yi;
+    const p = (yi * iw + xi) * 4;
+    const q = p + iw * 4;
+    for (let c = 0; c < 3; c++) {
+      const top = src[p + c] + (src[p + 4 + c] - src[p + c]) * ax;
+      const bottom = src[q + c] + (src[q + 4 + c] - src[q + c]) * ax;
+      rgb[c] += top + (bottom - top) * ay;
+    }
+  };
+  const slope = (yr - yl) / w;
+  for (let v = 0; v < outH; v++) {
+    for (let u = 0; u < outW; u++) {
+      rgb[0] = rgb[1] = rgb[2] = 0;
+      for (let j = 0; j < k; j++) {
+        for (let i = 0; i < k; i++) {
+          const dx = (u + (i + 0.5) / k) * fx;
+          const y = yl + slope * dx + ((v + (j + 0.5) / k) / outH - 0.5) * h - 0.5;
+          sample(x0 + dx - 0.5, y);
+        }
+      }
+      const o = (v * outW + u) * 4;
+      const n = k * k;
+      data[o] = rgb[0] / n;
+      data[o + 1] = rgb[1] / n;
+      data[o + 2] = rgb[2] / n;
+      data[o + 3] = 255;
+    }
   }
-  return { data, width: w, height: h };
+  return { data, width: outW, height: outH };
 }
 
 export interface DecodedLine {
@@ -250,6 +415,8 @@ export function lineWords(
 ): OcrWord[] {
   const words: OcrWord[] = [];
   const width = box.x1 - box.x0;
+  const { yl, yr, height } = lineOf(box);
+  const centreAt = (x: number) => yl + ((yr - yl) * (x - box.x0)) / Math.max(1, width);
   const xAt = (t: number) => box.x0 + ((t + 0.5) / (steps * filled)) * width;
   const half = Math.max(1, width / Math.max(1, line.text.length) / 2);
   let start = -1;
@@ -257,12 +424,15 @@ export function lineWords(
     if (start < 0) return;
     const text = line.text.slice(start, end).trim();
     if (text) {
+      const x0 = Math.max(box.x0, xAt(line.steps[start]) - half);
+      const x1 = Math.min(box.x1, xAt(line.steps[end - 1]) + half);
+      const centre = centreAt((x0 + x1) / 2);
       words.push({
         text,
-        x0: Math.max(box.x0, xAt(line.steps[start]) - half),
-        x1: Math.min(box.x1, xAt(line.steps[end - 1]) + half),
-        y0: box.y0,
-        y1: box.y1,
+        x0,
+        y0: centre - height / 2,
+        x1,
+        y1: centre + height / 2,
         confidence: line.confidence,
       });
     }

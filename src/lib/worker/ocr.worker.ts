@@ -9,6 +9,7 @@ import {
   detectionTensor,
   lineWords,
   recognitionInput,
+  scaleBox,
   REC_HEIGHT,
   type OcrWord,
 } from '../ocr/paddle';
@@ -70,13 +71,7 @@ async function recognise(image: RGBAImage): Promise<OcrWord[]> {
   const prob = detOut[det.outputNames[0]].data as Float32Array;
   const sx = image.width / size.width;
   const sy = image.height / size.height;
-  const boxes = detectionBoxes(prob, size.width, size.height).map((b) => ({
-    ...b,
-    x0: b.x0 * sx,
-    x1: b.x1 * sx,
-    y0: b.y0 * sy,
-    y1: b.y1 * sy,
-  }));
+  const boxes = detectionBoxes(prob, size.width, size.height).map((b) => scaleBox(b, sx, sy));
 
   const words: OcrWord[] = [];
   for (const box of boxes) {

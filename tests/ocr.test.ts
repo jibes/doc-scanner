@@ -37,6 +37,25 @@ describe('detection', () => {
     expect(boxes[0].y0).toBeLessThan(20);
     expect(boxes[0].y1).toBeGreaterThan(30);
   });
+
+  it('follows a tilted line and ignores a blob touching its end', () => {
+    const w = 400;
+    const h = 120;
+    const prob = new Float32Array(w * h);
+    // A line 10 px tall that drops 20 px over 300 px.
+    for (let x = 60; x < 360; x++) {
+      const top = Math.round(40 + ((x - 60) * 20) / 300);
+      for (let y = top; y < top + 10; y++) prob[y * w + x] = 0.9;
+    }
+    // A smudge touching the line's left end, three times as tall.
+    for (let y = 40; y < 75; y++) for (let x = 40; x < 66; x++) prob[y * w + x] = 0.9;
+    const [box] = detectionBoxes(prob, w, h);
+    expect(box.yr! - box.yl!).toBeGreaterThan(15);
+    // Height comes from the line (10 px, grown), not the smudge (35 px).
+    expect(box.height!).toBeLessThan(30);
+    // The smudge is trimmed off the start.
+    expect(box.x0).toBeGreaterThan(45);
+  });
 });
 
 describe('recognition', () => {
