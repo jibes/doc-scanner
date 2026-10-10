@@ -31,11 +31,10 @@ import {
 import { CASES, photograph } from './scene';
 import type { FilterId } from '../../src/lib/imaging/filters';
 import type { Quad, RGBAImage } from '../../src/lib/imaging/image';
-import { applyHomography, homography, insetQuad } from '../../src/lib/imaging/quad';
+import { applyHomography, fallbackQuad, homography } from '../../src/lib/imaging/quad';
 import { isBlurred } from '../../src/lib/imaging/sharpness';
-import { exportPdf } from '../../src/lib/export';
+import { exportPdf, pagePaperSize } from '../../src/lib/export';
 import { defaultSpec } from '../../src/lib/pipeline';
-import { pageSizePoints } from '../../src/lib/pdf/paper';
 import { detector, processor } from '../../src/lib/services';
 import { DEFAULT_SETTINGS, RESOLUTION_LONG_EDGE } from '../../src/lib/settings';
 import type { Page } from '../../src/lib/store/session.svelte';
@@ -73,6 +72,9 @@ export interface CaseResult {
     sharpness: number;
     blurred: boolean;
     expectBlurred: boolean;
+    /** Where the quad came from (model / edges / none) and whether it was clipped to the frame. */
+    source?: string;
+    offFrame?: boolean;
     cornerErr: number[];
     shift: number;
   };
@@ -85,6 +87,8 @@ export interface CaseResult {
     /** PDF page size the export picks, mm. */
     pageMm: [number, number];
     format: string | null;
+    /** Clockwise quarter turns auto-orientation applied in the PDF. */
+    turn?: number;
   };
   filters: Record<
     string,
@@ -155,7 +159,7 @@ async function ocrText(pixels: RGBAImage): Promise<string> {
       Math.round(pixels.width * scale),
       Math.round(pixels.height * scale),
     );
-    const words = await reader.recognise(small);
+    const { words } = await reader.recognise(small);
     return words.map((w) => w.text).join(' ');
   } catch (error) {
     return `OCR failed: ${error}`;
@@ -272,7 +276,7 @@ export async function runCase(id: string, options: CaseOptions): Promise<CaseRes
   const det = detector();
   await timed(timings, 'detectorLoad', () => det.ready);
   const still = await timed(timings, 'detect', () => det.still(photo.blob));
-  const quad = still.quad ?? insetQuad(still.width, still.height, 0.04);
+  const quad = still.quad ?? fallbackQuad(still.width, still.height);
   const { errors, shift } = cornerError(quad, photo.quad);
 
   const page: Page = {
@@ -476,7 +480,10 @@ export async function runCase(id: string, options: CaseOptions): Promise<CaseRes
     const reader = new OcrClient();
     const start = performance.now();
     try {
-      const words = await reader.recognise({ ...clean, data: new Uint8ClampedArray(clean.data) });
+      const { words } = await reader.recognise({
+        ...clean,
+        data: new Uint8ClampedArray(clean.data),
+      });
       const got = words.map((w) => w.text).join(' ');
       files['ocr_clean_boxes.png'] = await encodeImage(boxOverlay(clean, words), 'image/png');
       ocrClean = { cer: cer(text, got), ms: Math.round(performance.now() - start), text: got };
@@ -487,6 +494,8 @@ export async function runCase(id: string, options: CaseOptions): Promise<CaseRes
 
   // --- The PDF, as the Save button builds it.
   let pdf: CaseResult['pdf'];
+  // Quarter turns OCR applied to the page in the PDF (auto-orientation).
+  let turn = 0;
   {
     const start = performance.now();
     const blob = await exportPdf(
@@ -496,13 +505,14 @@ export async function runCase(id: string, options: CaseOptions): Promise<CaseRes
       () => undefined,
       {
         searchable: options.ocr,
+        onTurn: (_, t) => (turn = t),
       },
     );
     pdf = { bytes: blob.size, ms: Math.round(performance.now() - start) };
     files['scan.pdf'] = await blobBase64(blob);
   }
 
-  const size = pageSizePoints(outW, outH, 300);
+  const size = pagePaperSize(page, outW, outH);
   const aspect = outW / outH;
   // Compare in the photo's orientation: odd shifts swap the page's sides.
   const expected = shift % 2 ? 1 / truthAspect : truthAspect;
@@ -529,6 +539,8 @@ export async function runCase(id: string, options: CaseOptions): Promise<CaseRes
       confidence: still.confidence,
       sharpness: still.sharpness,
       blurred: isBlurred({ sharpness: still.sharpness }),
+      source: still.source,
+      offFrame: still.offFrame,
       expectBlurred: !!kase.expectBlurred,
       cornerErr: errors.map((e) => Math.round(e * 10) / 10),
       shift,
@@ -540,6 +552,7 @@ export async function runCase(id: string, options: CaseOptions): Promise<CaseRes
       truthAspect: expected,
       aspectErr: aspect / expected - 1,
       pageMm: [(size.width / 72) * 25.4, (size.height / 72) * 25.4],
+      turn,
       format: size.format,
     },
     filters,

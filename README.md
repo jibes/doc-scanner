@@ -18,18 +18,18 @@ Paperless server, and it keeps working offline after the first visit.
 
 ## How it works
 
-| Stage      | What happens                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Detect     | [DocAligner](https://github.com/DocsaidLab/DocAligner) LC100 (4.8 MB ONNX, heatmap regression) runs on the live preview via ONNX Runtime Web. About 0.99 Jaccard on SmartDoc 2015.                                                                                                                                                                                             |
-| Capture    | Full-sensor still via ImageCapture where available (Android Chrome), else the video frame. Auto-capture fires after ~1 s of a steady, confident detection. "Hold still…" shows while the photo is taken; the flash and buzz mean it is done. Blurred captures are detected (edge strength against a slightly blurred copy, worst of four directions) and flagged for a retake. |
-| Refine     | The model's corners (from a 256 px thumbnail) are snapped to the real paper edges at 1600 px: gradient search along each side's normal, sub-pixel peak, robust line fit, intersection. Typically 11 px → 1 px of error.                                                                                                                                                        |
-| Proportion | Edge lengths in a photo are foreshortened, so pages shot at an angle would rectify too short. The camera's focal length is recovered from the quad's vanishing points (Zhang & He, 2007) to get the true aspect ratio; a tilted A4 comes out at 1 : 1.414.                                                                                                                     |
-| Rectify    | Perspective warp with Catmull-Rom bicubic sampling (no softening when enlarging) and a box prefilter when shrinking (no aliasing).                                                                                                                                                                                                                                             |
-| Flatten    | A paper-colour surface from a morphological closing (which wipes out ink but keeps the paper's own shading) follows wrinkles, creases and hand shadows; a coarse per-block estimate guards against large dark content. Dividing by it removes shadows and colour casts with no grey halos around text.                                                                         |
-| Filter     | See below.                                                                                                                                                                                                                                                                                                                                                                     |
-| Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                                                                                                                                          |
-| Read       | Optional, for saved PDFs: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) PP-OCRv5 text detection (4.7 MB) and Latin recognition (7.8 MB) in a worker. Words go into an invisible text layer positioned over the image, so the PDF is searchable and copyable. Runs in the background while you review the pages; "Save without text" skips the wait.                   |
-| Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                                                                                                                                                   |
+| Stage      | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Detect     | [DocAligner](https://github.com/DocsaidLab/DocAligner) LC100 (4.8 MB ONNX, heatmap regression) runs on the live preview via ONNX Runtime Web. About 0.99 Jaccard on SmartDoc 2015. On the captured photo its quad is checked against the photo itself: every side must be a colour edge along its whole length. A line search over the photo (Hough transform on colour gradients) finds the quads that pass, and the largest one wins, so a page that fills the frame, one whose model quad stops at a photo or a coloured band inside it, or a coloured or gradient page is cropped to its real edges. A page running off the photo is cut to the part in view, undistorted, and the app says so. |
+| Capture    | Full-sensor still via ImageCapture where available (Android Chrome), else the video frame. Auto-capture fires after ~1 s of a steady, confident detection. "Hold still…" shows while the photo is taken; the flash and buzz mean it is done. Blurred captures are flagged for a retake: edge strength against a slightly blurred copy catches focus blur, and the width of the strongest edges in each direction catches a shake, which smears edges one way only.                                                                                                                                                                                                                                  |
+| Refine     | The model's corners (from a 256 px thumbnail) are snapped to the real paper edges at 1600 px: gradient search along each side's normal, sub-pixel peak, robust line fit, intersection. Typically 11 px → 1 px of error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Proportion | Edge lengths in a photo are foreshortened, so pages shot at an angle would rectify too short. The camera's focal length is recovered from the quad's vanishing points (Zhang & He, 2007) to get the true aspect ratio; a tilted A4 comes out at 1 : 1.414.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Rectify    | Perspective warp with Catmull-Rom bicubic sampling (no softening when enlarging) and a box prefilter when shrinking (no aliasing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Flatten    | A paper-colour surface from a morphological closing (which wipes out ink but keeps the paper's own shading) follows wrinkles, creases and hand shadows; a coarse per-block estimate guards against large dark content. Dividing by it removes shadows and colour casts with no grey halos around text.                                                                                                                                                                                                                                                                                                                                                                                              |
+| Filter     | See below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Export     | One PDF. The paper size comes from the page's shape, since a photo has no scale: A4 / Letter / Legal, an ID-1 card (85.6 × 54 mm), an 80 mm till receipt for long narrow strips, anything else fitted to A4. A crop that is a guess or cut off by the photo's edge claims no format. Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                                                                                                                                                                                                                                                          |
+| Read       | Optional, for saved PDFs: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) PP-OCRv5 text detection (4.7 MB) and Latin recognition (7.8 MB) in a worker. Words go into an invisible text layer positioned over the image, so the PDF is searchable and copyable. A page photographed sideways or upside down is turned upright: tall text regions mean sideways, and the longest lines read both ways up tell up from down; only clear evidence turns a page, and never one you rotated yourself. Runs in the background while you review the pages (the page turns in the app too); "Save without text" skips the wait.                                                                       |
+| Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ### Filters that do not blur or fatten
 
@@ -97,7 +97,7 @@ npm run dev          # http://localhost:5173/doc-scanner/
 
 ```bash
 npm run check        # svelte-check + tsc
-npm test             # vitest: imaging, detection decoding, refinement, PDF, camera choice
+npm test             # vitest: imaging, detection, refinement, orientation, PDF, camera choice
 npm run lint
 npm run build        # -> dist/
 npm run preview
@@ -196,7 +196,9 @@ src/
       refine.ts                 sub-pixel edge snapping
       box.ts components.ts      box/Gaussian filters, connected components
     detect/heatmap.ts           DocAligner heatmaps → corners
+    detect/quadSearch.ts        page edges by line search: checks and extends the model's quad
     ocr/paddle.ts               PP-OCRv5 pre/post-processing (DB boxes, CTC decoding)
+    ocr/orientation.ts          sideways / upside-down pages from the text
     pdf/                        PDF writer, PNG predictors, paper size
     worker/                     detector, OCR (ONNX) and processor workers + clients
     camera/camera.ts            lens selection, torch, full-resolution stills
@@ -236,8 +238,14 @@ once.
   but a crease narrower than a thick pen stroke is indistinguishable from ink.
 - **Curled pages are not dewarped.** Book spines and folded receipts are
   straightened as planes.
-- **A-series pages are assumed to be A4** in the PDF page size: A5 and A4 share
-  an aspect ratio.
+- **Paper size is a guess from the shape.** A photo carries no scale, so:
+  A-series pages are assumed to be A4 (A5 shares its aspect ratio); till
+  receipts are assumed to be on 80 mm rolls, so a 57/58 mm card-terminal slip
+  comes out about 1.4× too large; an ID-1 card and a Legal page differ by
+  4% in shape, so a strongly tilted shot of one can be taken for the other;
+  other shapes are fitted to A4.
+- **A page running off the photo** keeps only the part in view, so its PDF
+  page is smaller than the paper.
 - **Light colour fills in B&W mode** come out as an outline or a grey texture.
   The Document filter keeps them in colour instead.
 - **iOS Safari has no ImageCapture**, so stills there come from the video
@@ -248,6 +256,12 @@ once.
 - **OCR reads Latin script only** (English, German, French, Spanish, …), and
   the text layer uses the standard Helvetica encoding, so characters outside
   Windows-1252 are written as `?`. It takes a few seconds per page on a phone.
+- **Curly apostrophes and ellipses come out as `'` and `...`** in the text
+  layer: the recogniser was trained on normalised text. They are left that
+  way on purpose. Which quote a straight `'` stands for (’ in "don’t", ‘ or ’
+  around a quotation, a foot mark, a typewriter page) cannot be told from the
+  text, and searches are typed with the plain characters anyway, so a guessed
+  conversion would mostly make words harder to find.
 
 ## Privacy
 

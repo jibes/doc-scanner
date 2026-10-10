@@ -15,6 +15,11 @@ export interface PageSpec {
   quad: Quad;
   /** Clockwise quarter turns applied after rectification. */
   rotation: number;
+  /**
+   * The rotation is settled: the user turned the page, or OCR found it
+   * upright. Otherwise OCR may find it sideways or upside down and turn it.
+   */
+  oriented?: boolean;
   filter: FilterId;
   adjustments: Adjustments;
 }

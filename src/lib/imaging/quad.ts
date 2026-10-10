@@ -114,6 +114,23 @@ export function insetQuad(width: number, height: number, inset = 0.05): Quad {
   ];
 }
 
+/** The crop given to a photo in which no page was found. */
+export function fallbackQuad(width: number, height: number): Quad {
+  return insetQuad(width, height, 0.04);
+}
+
+/**
+ * Whether a crop is no measurement of the page's shape: the untouched
+ * fallback crop, or one with a corner on the photo's border (a page running
+ * off the photo, clipped to it).
+ */
+export function cropShapeUnknown(q: Quad, width: number, height: number): boolean {
+  const fallback = fallbackQuad(width, height);
+  if (q.every((p, i) => distance(p, fallback[i]) < 0.5)) return true;
+  const tol = 0.5;
+  return q.some(([x, y]) => x <= tol || y <= tol || x >= width - tol || y >= height - tol);
+}
+
 export function fullQuad(width: number, height: number): Quad {
   return [
     [0, 0],

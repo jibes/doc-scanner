@@ -1,12 +1,19 @@
-import { pageSizePoints } from './pdf/paper';
+import { cropShapeUnknown } from './imaging/quad';
+import { pageSizePoints, type PageSize } from './pdf/paper';
 import { buildPdf, type PdfPage } from './pdf/writer';
-import { encodedPage } from './exportCache';
-import type { OcrWord } from './ocr/paddle';
+import { encodedPage, turnedPage, uprightPage, type PageText } from './exportCache';
 import type { AppSettings } from './settings';
 import type { Page } from './store/session.svelte';
 
-/** Nominal resolution for pages whose shape matches no paper format (receipts). */
-const FALLBACK_DPI = 300;
+/**
+ * Physical size of a page rendered at `width` x `height` pixels: from its
+ * shape (pdf/paper.ts), unless the crop is a guess or clipped to the photo,
+ * whose shape says nothing about the paper.
+ */
+export function pagePaperSize(page: Page, width: number, height: number): PageSize {
+  const known = !cropShapeUnknown(page.spec.quad, page.width, page.height);
+  return pageSizePoints(width, height, { known });
+}
 
 export function defaultTitle(date = new Date()): string {
   const p = (n: number) => String(n).padStart(2, '0');
@@ -32,34 +39,48 @@ export async function exportPdf(
     searchable = false,
     onReading,
     skipText,
+    onTurn,
   }: {
     searchable?: boolean;
     /** Called while waiting for a page's text recognition. */
     onReading?: (page: number, total: number) => void;
     /** Resolves when the user chooses to save without the remaining text. */
     skipText?: Promise<void>;
+    /** Called when OCR finds a page sideways or upside down (clockwise quarter turns). */
+    onTurn?: (page: number, turn: number) => void;
   } = {},
 ): Promise<Blob> {
   let skipped = false;
   void skipText?.then(() => (skipped = true));
-  // The page's words, or none once the user chooses to skip the text.
-  const waitForText = (words: Promise<OcrWord[]>, index: number) => {
+  const none: PageText = { words: [], turn: 0 };
+  // The page's text, or none once the user chooses to skip the text.
+  const waitForText = (text: Promise<PageText>, index: number) => {
     onReading?.(index, pages.length);
-    return skipText ? Promise.race([words, skipText.then((): OcrWord[] => [])]) : words;
+    return skipText ? Promise.race([text, skipText.then(() => none)]) : text;
   };
   const out: PdfPage[] = [];
   for (let i = 0; i < pages.length; i++) {
     onProgress(i, pages.length);
     const page = pages[i];
-    const { image, width, height, words } = await encodedPage(page, settings, { text: searchable });
-    const size = pageSizePoints(width, height, FALLBACK_DPI);
+    const encoded = await encodedPage(page, settings, { text: searchable });
+    let { image, width, height } = encoded;
+    const reading = encoded.text;
+    const text = searchable && reading && !skipped ? await waitForText(reading, i) : undefined;
+    let found = text?.words;
+    if (text?.turn) {
+      // OCR found the page sideways or upside down: put it in upright.
+      onTurn?.(i, text.turn);
+      ({ image, width, height, words: found } = await uprightPage(page, settings, text));
+    }
+    const upright = text?.turn ? turnedPage(page, text.turn) : page;
+    const size = pagePaperSize(upright, width, height);
     out.push({
       pixelWidth: width,
       pixelHeight: height,
       width: size.width,
       height: size.height,
       image,
-      words: searchable && words && !skipped ? await waitForText(words, i) : undefined,
+      words: found,
     });
   }
   onProgress(pages.length, pages.length);

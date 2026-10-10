@@ -15,7 +15,14 @@ export function flags(r) {
   if (!d.found) out.push('no detection (manual crop)');
   else if (Math.max(...d.cornerErr) > 10)
     out.push(`corner err ${Math.max(...d.cornerErr).toFixed(0)}px`);
-  if (d.shift) out.push(`output rotated ${d.shift * 90}° (no auto-orientation)`);
+  // The crop's corner order turns the page by `shift`; auto-orientation turns it back by `turn`.
+  const turn = r.output.turn ?? 0;
+  const net = (d.shift - turn + 4) % 4;
+  if (net)
+    out.push(
+      `output rotated ${net * 90}° (${turn ? `auto-turned ${turn * 90}°` : 'not auto-oriented'})`,
+    );
+  else if (turn) out.push(`auto-turned ${turn * 90}°`);
   if (Math.abs(r.output.aspectErr) > 0.02) out.push(`aspect ${pct(r.output.aspectErr)}`);
   if (r.truth.format !== r.output.format)
     out.push(`format ${r.output.format ?? 'none'}≠${r.truth.format ?? 'none'}`);
