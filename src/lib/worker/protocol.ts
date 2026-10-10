@@ -1,30 +1,64 @@
-import type { ScanSettings } from '../imaging/pipeline';
-import type { Quad } from '../imaging/types';
+import type { Detection } from '../detect/heatmap';
+import type { Quad } from '../imaging/image';
+import type { PdfImage } from '../pdf/writer';
+import type { PageSpec } from '../pipeline';
 
-export interface SerializedImage {
-  data: Uint8ClampedArray<ArrayBuffer>;
-  width: number;
-  height: number;
-}
+/* ------------------------------------------------------------ processor ---- */
 
-export interface WarpRequest {
-  id: number;
-  type: 'warp';
-  image: SerializedImage;
-  quad: Quad;
-  maxLongEdge: number;
-}
+export type ProcessorRequest =
+  | {
+      type: 'render';
+      id: number;
+      pageId: string;
+      source: Blob;
+      spec: PageSpec;
+      longEdge: number;
+    }
+  | {
+      type: 'encode';
+      id: number;
+      pageId: string;
+      source: Blob;
+      spec: PageSpec;
+      longEdge: number;
+      jpegQuality: number;
+    }
+  | {
+      /** The rectified page before any filter, for "hold to compare". */
+      type: 'rectified';
+      id: number;
+      pageId: string;
+      source: Blob;
+      spec: PageSpec;
+      longEdge: number;
+    }
+  | { type: 'forget'; pageId: string };
 
-export interface ProcessRequest {
-  id: number;
-  type: 'process';
-  image: SerializedImage;
-  settings: ScanSettings;
-}
+export type ProcessorResponse =
+  | { type: 'bitmap'; id: number; bitmap: ImageBitmap }
+  | { type: 'encoded'; id: number; image: PdfImage; width: number; height: number }
+  | { type: 'error'; id: number; message: string };
 
-export type WorkerRequest = WarpRequest | ProcessRequest;
+/* ------------------------------------------------------------- detector ---- */
 
-export type WorkerResponse =
-  | { id: number; type: 'stage'; stage: string }
-  | { id: number; type: 'result'; image: SerializedImage }
-  | { id: number; type: 'error'; message: string };
+export type DetectorRequest =
+  | { type: 'init' }
+  /** A video frame, already resized to the model's input size. */
+  | { type: 'frame'; id: number; frame: ImageBitmap }
+  /** A captured photo: detect, then refine against the full-resolution edges. */
+  | { type: 'still'; id: number; source: Blob };
+
+export type DetectorResponse =
+  | { type: 'ready'; backend: string }
+  | { type: 'init-error'; message: string }
+  | { type: 'frame'; id: number; detection: Detection | null; ms: number }
+  | {
+      type: 'still';
+      id: number;
+      /** In source pixel-edge coordinates, or null when no page was found. */
+      quad: Quad | null;
+      width: number;
+      height: number;
+      confidence: number;
+    }
+  | { type: 'error'; id: number; message: string };

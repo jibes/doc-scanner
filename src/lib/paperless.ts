@@ -1,145 +1,95 @@
-export interface PaperlessConfig {
-  baseUrl: string;
-  token: string;
-  tagIds: number[];
-}
+import type { AppSettings } from './settings';
 
-export const DEFAULT_PAPERLESS_CONFIG: PaperlessConfig = {
-  baseUrl: '',
-  token: '',
-  tagIds: [],
-};
-
-const CONFIG_KEY = 'doc-scanner.paperless.v1';
-
-export function loadPaperlessConfig(): PaperlessConfig {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    if (!raw) return DEFAULT_PAPERLESS_CONFIG;
-    const parsed = JSON.parse(raw) as Partial<PaperlessConfig>;
-    return {
-      baseUrl: typeof parsed.baseUrl === 'string' ? parsed.baseUrl : '',
-      token: typeof parsed.token === 'string' ? parsed.token : '',
-      tagIds: Array.isArray(parsed.tagIds) ? parsed.tagIds.filter((n) => Number.isInteger(n)) : [],
-    };
-  } catch {
-    return DEFAULT_PAPERLESS_CONFIG;
-  }
-}
-
-export function savePaperlessConfig(config: PaperlessConfig): void {
-  try {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-  } catch {
-    // See settings.ts — persistence is best effort.
-  }
-}
+type PaperlessConfig = AppSettings['paperless'];
 
 export function isConfigured(config: PaperlessConfig): boolean {
-  return config.baseUrl.trim().length > 0 && config.token.trim().length > 0;
+  return config.baseUrl.trim() !== '' && config.token.trim() !== '';
 }
 
-function normalizeBaseUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '');
+function base(config: PaperlessConfig): string {
+  return config.baseUrl.trim().replace(/\/+$/, '');
+}
+
+function headers(config: PaperlessConfig): HeadersInit {
+  return { Authorization: `Token ${config.token.trim()}` };
 }
 
 /**
- * Upload a page to Paperless-ngx.
- *
- * Paperless runs OCRmyPDF + Tesseract on ingest, so the PNG we send becomes a
- * searchable PDF with a hidden text layer and gets indexed for full-text
- * search. Returns the task id, which can be polled with {@link waitForTask}.
+ * Upload a PDF. Paperless runs OCRmyPDF on ingest, which adds the searchable
+ * text layer. Returns the consumption task id.
  */
 export async function uploadDocument(
   config: PaperlessConfig,
-  file: Blob,
+  pdf: Blob,
   filename: string,
   title: string,
 ): Promise<string> {
-  const base = normalizeBaseUrl(config.baseUrl);
-  if (!base) throw new Error('Paperless base URL is not configured');
-  if (!config.token.trim()) throw new Error('Paperless API token is not configured');
-
   const form = new FormData();
-  form.append('document', file, filename);
-  form.append('title', title);
-  // Paperless reads tags as a repeated multipart field, one id per entry.
-  for (const tagId of config.tagIds) form.append('tags', String(tagId));
+  form.append('document', pdf, filename);
+  if (title) form.append('title', title);
+  // A repeated field, one id per entry; a JSON array is rejected.
+  for (const tag of config.tagIds) form.append('tags', String(tag));
 
   let response: Response;
   try {
-    response = await fetch(`${base}/api/documents/post_document/`, {
+    response = await fetch(`${base(config)}/api/documents/post_document/`, {
       method: 'POST',
-      headers: { Authorization: `Token ${config.token.trim()}` },
+      headers: headers(config),
       body: form,
     });
   } catch (error) {
     throw new Error(
-      `Could not reach ${base}. Check the URL, that the server is running, and that it allows CORS from this origin. (${error instanceof Error ? error.message : String(error)})`,
+      `Could not reach ${base(config)}. Check the URL, that the server is up, and that PAPERLESS_CORS_ALLOWED_HOSTS includes this app's origin.`,
       { cause: error },
     );
   }
-
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
     throw new Error(
       `Paperless returned ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
     );
   }
-
-  const body = await response.text();
+  const body = (await response.text()).trim();
   try {
     const parsed: unknown = JSON.parse(body);
     return typeof parsed === 'string' ? parsed : String(parsed);
   } catch {
-    return body.trim();
+    return body.replace(/^"|"$/g, '');
   }
 }
 
-export interface TaskStatus {
-  status: string;
-  documentId: number | null;
-}
+export type TaskOutcome = 'success' | 'failure' | 'pending';
 
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Best-effort poll of the ingest task so the UI can confirm that OCR finished.
- * Returns null if the task is still running when the timeout expires, or if
- * polling is not permitted — the document is queued either way.
- */
+/** Poll the consumption task until it finishes or `timeoutMs` passes. */
 export async function waitForTask(
   config: PaperlessConfig,
   taskId: string,
-  { timeoutMs = 45000, intervalMs = 2500 }: { timeoutMs?: number; intervalMs?: number } = {},
-): Promise<TaskStatus | null> {
-  const base = normalizeBaseUrl(config.baseUrl);
+  timeoutMs = 60_000,
+): Promise<{ outcome: TaskOutcome; message: string | null }> {
   const deadline = Date.now() + timeoutMs;
-
   while (Date.now() < deadline) {
-    await delay(intervalMs);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     try {
-      const response = await fetch(`${base}/api/tasks/?task_id=${encodeURIComponent(taskId)}`, {
-        headers: { Authorization: `Token ${config.token.trim()}` },
-      });
+      const response = await fetch(
+        `${base(config)}/api/tasks/?task_id=${encodeURIComponent(taskId)}`,
+        { headers: headers(config) },
+      );
       if (!response.ok) continue;
-
-      const tasks: unknown = await response.json();
-      const task = Array.isArray(tasks) ? (tasks[0] as Record<string, unknown>) : null;
+      const list: unknown = await response.json();
+      const task = Array.isArray(list)
+        ? (list[0] as Record<string, unknown> | undefined)
+        : undefined;
       if (!task) continue;
-
-      const status = String(task.status ?? '');
-      if (status === 'SUCCESS' || status === 'FAILURE') {
-        const related = task.related_document;
+      if (task.status === 'SUCCESS') return { outcome: 'success', message: null };
+      if (task.status === 'FAILURE') {
         return {
-          status,
-          documentId: typeof related === 'number' ? related : null,
+          outcome: 'failure',
+          message: typeof task.result === 'string' ? task.result : null,
         };
       }
     } catch {
-      return null;
+      return { outcome: 'pending', message: null };
     }
   }
-
-  return null;
+  return { outcome: 'pending', message: null };
 }

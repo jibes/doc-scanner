@@ -1,34 +1,26 @@
-export type ToastKind = '' | 'good' | 'err';
+export type ToastKind = 'info' | 'good' | 'err';
 
-interface UiState {
-  busy: boolean;
-  busyLabel: string;
-  toastMessage: string;
-  toastKind: ToastKind;
-  toastVisible: boolean;
-}
-
-export const ui = $state<UiState>({
-  busy: false,
-  busyLabel: 'Working…',
-  toastMessage: '',
-  toastKind: '',
-  toastVisible: false,
+export const ui = $state({
+  busy: null as null | { label: string; progress: number | null },
+  toast: null as null | { message: string; kind: ToastKind; key: number },
 });
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-export function showToast(message: string, kind: ToastKind = ''): void {
-  ui.toastMessage = message;
-  ui.toastKind = kind;
-  ui.toastVisible = true;
+export function toast(message: string, kind: ToastKind = 'info'): void {
+  ui.toast = { message, kind, key: Date.now() };
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    ui.toastVisible = false;
-  }, 3600);
+  toastTimer = setTimeout(() => (ui.toast = null), kind === 'err' ? 6000 : 3200);
 }
 
-export function setBusy(busy: boolean, label = 'Working…'): void {
-  ui.busy = busy;
-  ui.busyLabel = label;
+export function busy(label: string, progress: number | null = null): void {
+  ui.busy = { label, progress };
+}
+
+export function idle(): void {
+  ui.busy = null;
+}
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

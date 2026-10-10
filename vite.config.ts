@@ -22,7 +22,7 @@ export default defineConfig({
         name: 'Doc Scanner',
         short_name: 'Scanner',
         description:
-          'Scan documents with your phone camera and send clean, searchable PDFs to Paperless-ngx.',
+          'Scan multi-page documents with automatic edge detection and send clean PDFs to Paperless-ngx.',
         theme_color: '#0a0a0a',
         background_color: '#0a0a0a',
         display: 'standalone',
@@ -41,13 +41,16 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,webmanifest}'],
+        // The model and the ONNX runtime are what make the app work offline.
+        globPatterns: ['**/*.{js,mjs,css,html,svg,png,webmanifest,wasm,onnx}'],
+        maximumFileSizeToCacheInBytes: 32 * 1024 * 1024,
         navigateFallback,
         cleanupOutdatedCaches: true,
       },
       devOptions: { enabled: false },
     }),
   ],
+  worker: { format: 'es' },
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],

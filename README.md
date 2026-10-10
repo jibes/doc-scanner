@@ -1,45 +1,72 @@
 # Doc Scanner
 
-A phone-camera document scanner that runs entirely in the browser and files the
-result into a self-hosted [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx)
-instance.
+A phone-camera document scanner that runs entirely in the browser and files
+multi-page PDFs into a self-hosted
+[Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx) instance.
 
-Point your phone at a page, drag the corners onto the paper, and the app
-rectifies the perspective, flattens the lighting, turns the background into a
-literal `#FFFFFF` and the text into a literal `#000000`, keeps logos and stamps
-in colour, and uploads a PNG. Paperless runs OCRmyPDF and Tesseract on ingest,
-so what lands in your archive is a small, searchable PDF.
+Point your phone at a page. A neural network finds its edges live on the camera
+preview; hold steady and it captures by itself. Every page is cropped to its
+real edges, straightened, and its proportions corrected for the camera angle.
+Then it gets a filter that makes the paper literal `#FFFFFF` and the text
+literal `#000000` without blurring it, while logos, stamps and signatures keep
+their colour. Collect as many pages as you like, then save one PDF or upload it
+to Paperless, which adds the OCR text layer.
 
-There is no backend. The app is a static site; your phone talks straight to your
-own Paperless server.
+No backend. The app is static files; your phone talks straight to your own
+Paperless server, and it keeps working offline after the first visit.
 
-## What it does
+## How it works
 
-| Stage     | What happens                                                                                            |
-| --------- | ------------------------------------------------------------------------------------------------------- |
-| Capture   | Standard 1x rear lens at full sensor resolution, or pick an image from the gallery                      |
-| Rectify   | Four draggable corners, perspective warp to an axis-aligned page                                        |
-| Flatten   | Divide-by-background illumination correction, per channel, so yellowed or unevenly lit paper goes white |
-| Binarise  | Sauvola local thresholding (also Adaptive, Niblack, Wolf, Otsu)                                         |
-| Colour    | Chroma-based mask keeps logos, stamps and signatures in their original pixels                           |
-| Composite | Three normalised layers blended into the final page                                                     |
-| Export    | PNG with a `pHYs` chunk sized to the detected paper format, so the PDF comes out at real size           |
-| Upload    | `POST /api/documents/post_document/`, then poll the ingest task                                         |
+| Stage      | What happens                                                                                                                                                                                                                                               |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Detect     | [DocAligner](https://github.com/DocsaidLab/DocAligner) LC100 (4.8 MB ONNX, heatmap regression) runs on the live preview via ONNX Runtime Web. About 0.99 Jaccard on SmartDoc 2015.                                                                         |
+| Capture    | Full-sensor still via ImageCapture where available (Android Chrome), else the video frame. Auto-capture fires after ~1 s of a steady, confident detection.                                                                                                 |
+| Refine     | The model's corners (from a 256 px thumbnail) are snapped to the real paper edges at 1600 px: gradient search along each side's normal, sub-pixel peak, robust line fit, intersection. Typically 11 px → 1 px of error.                                    |
+| Proportion | Edge lengths in a photo are foreshortened, so pages shot at an angle would rectify too short. The camera's focal length is recovered from the quad's vanishing points (Zhang & He, 2007) to get the true aspect ratio; a tilted A4 comes out at 1 : 1.414. |
+| Rectify    | Perspective warp with Catmull-Rom bicubic sampling (no softening when enlarging) and a box prefilter when shrinking (no aliasing).                                                                                                                         |
+| Flatten    | Paper colour is estimated per block from the brightest pixels, with photos, logos and table strips rejected and filled in from the surrounding paper. Dividing by it removes shadows, gradients and colour casts, with no grey halos around text.          |
+| Filter     | See below.                                                                                                                                                                                                                                                 |
+| Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                      |
+| Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                               |
 
-### The two guarantees
+### Filters that do not blur
 
-The composite blends three weights that always sum to one:
+Cheap scanners threshold the page to pure black and white, then blur the mask to
+hide the jaggies, which is why their text looks soft. Here each pixel instead
+goes through a narrow linear ramp centred on its own local (Sauvola) threshold.
+Pixels clearly on one side become exactly black or exactly white; only the one
+or two pixels that straddle a stroke edge keep a proportional grey. Edges stay
+as sharp as the lens allowed, and text has no hard 1-bit staircase either.
 
-```
-colour = c
-ink    = k * (1 - c)
-paper  = (1 - c) * (1 - k)
-```
+Around that ramp:
 
-So any pixel that is neither ink nor colour lands on exactly `paper` (255), and
-any pixel at the core of a stroke lands on exactly `text` (0). Both masks are
-feathered before blending, so edges stay anti-aliased instead of turning into
-1-bit jaggies. `tests/composite.test.ts` asserts all of this.
+- **Contour smoothing before the threshold.** Sub-pixel Gaussian, scaled to the
+  camera's pixel size, removes the wobble that sensor noise and JPEG blocks put
+  into glyph outlines. The ramp re-sharpens every edge afterwards.
+- **Upsampled thresholding.** Pages are rendered at about 300 dpi even when
+  that means enlarging the photo (bicubic, at most 2×), which gives smoother
+  letter shapes than thresholding at camera resolution.
+- **Flat-region handling.** Sauvola hollows out large solid shapes. Where local
+  contrast is low, an absolute threshold takes over, so filled logos stay
+  filled and tinted boxes go white.
+- **Hysteresis cleanup.** Every non-white blob (a glyph plus its anti-aliased
+  fringe) survives only if it contains enough real ink. That removes specks
+  and faint noise, and grey slivers of table along the crop border.
+- **Colour layer.** Saturated, non-paper blobs larger than a speck (logos,
+  stamps, signatures, highlighter) are composited back in colour; chromatic
+  fringes on black text are too small to qualify.
+
+| Filter   | Result                                                     |
+| -------- | ---------------------------------------------------------- |
+| Document | Black text on white, colour content kept (default)         |
+| B&W      | Black text on white, everything else too                   |
+| Grey     | Flattened greyscale with clean white paper                 |
+| Colour   | Flattened colour with clean white paper and a levels curve |
+| Original | Perspective correction only                                |
+
+Per page you can adjust whiteness, ink depth, text weight and sharpening, rotate,
+re-crop with a magnifier loupe, retake, reorder and delete. Hold the eye button
+to compare with the unfiltered page.
 
 ## Quick start
 
@@ -48,202 +75,100 @@ npm install
 npm run dev          # http://localhost:5173/doc-scanner/
 ```
 
-The dev server serves from the same sub-path as production, so base-path bugs
-show up locally rather than after a deploy.
-
 ```bash
-npm run check        # svelte-check + tsc for app, node and test configs
-npm test             # vitest, 78 tests over the imaging pipeline and camera selection
-npm run lint         # eslint
-npm run format       # prettier
+npm run check        # svelte-check + tsc
+npm test             # vitest: imaging, detection decoding, refinement, PDF, camera choice
+npm run lint
 npm run build        # -> dist/
-npm run preview      # serve dist/ locally
-npm run icons        # regenerate the PWA icons in public/
+npm run preview
+```
+
+`tests/browser/synth.ts` generates synthetic phone photos (a printed page on a
+wood-grain table with lighting gradient, shadow, noise and lens blur) for
+checking detection and filters end to end in the dev server:
+
+```js
+const { synthPhoto } = await import('/doc-scanner/tests/browser/synth.ts');
 ```
 
 ## Deploying to GitHub Pages
 
 `.github/workflows/deploy.yml` builds and publishes on every push to `main`.
-Enable it once under **Settings → Pages → Build and deployment → Source:
-GitHub Actions**.
+Enable it once under **Settings → Pages → Build and deployment → Source: GitHub
+Actions**. The base path comes from `actions/configure-pages`; for a user/org
+site or custom domain build with `VITE_BASE=/ npm run build`.
 
-The workflow asks `actions/configure-pages` for the base path and passes it to
-the build as `VITE_BASE`, so forks with a different repository name work without
-edits. To build for a user/org site or a custom domain:
+Camera access needs a secure context: GitHub Pages (HTTPS) and `localhost` work,
+a plain `http://192.168.x.x` does not.
 
-```bash
-VITE_BASE=/ npm run build
-```
-
-Camera access requires a secure context. GitHub Pages is HTTPS, so the deployed
-URL works as-is. `http://localhost` also counts as secure; a plain
-`http://192.168.x.x` does not.
+The model (4.8 MB) and the ONNX Runtime WebAssembly binary (14 MB, 3.7 MB
+gzipped) are precached by the service worker on the first visit.
 
 ## Connecting to Paperless-ngx
 
-Open the gear icon and fill in:
+Open the gear icon and enter the server URL and an API token (Paperless: your
+profile → _API Auth Token_). Optional default tag IDs are attached to every
+upload. Both values stay in this browser's `localStorage` and are only ever sent
+to that server.
 
-- **Base URL** — e.g. `https://paperless.example.com`
-- **API token** — from Paperless under _Settings → API Tokens_
-- **Default tag IDs** — optional, comma separated
-
-Both values are kept in this browser's `localStorage` and are only ever sent to
-the server you name. Nothing goes anywhere else.
-
-### You must allow CORS
-
-The browser is calling your Paperless server from a different origin, so
-Paperless has to permit it. In `docker-compose.env`:
+The browser calls Paperless from another origin, so Paperless must allow it.
+In `docker-compose.env`:
 
 ```bash
 PAPERLESS_CORS_ALLOWED_HOSTS=https://yourname.github.io
 ```
 
-Then restart the container. Without this the upload fails with a network error
-and the app will tell you so.
-
-If you serve the scanner from a custom domain, list that origin instead. If you
-run the scanner from `http://localhost:5173`, add that too.
-
-## Settings
-
-The four sliders most people touch:
-
-| Control            | Effect                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------- |
-| Paper whiteness    | Background level. 255 is pure white; lower it for a softer look                                   |
-| Text boldness      | Inverse of the Sauvola `k` (0–100). Higher thickens strokes, lower thins them                     |
-| Text darkness      | Ink level. 0 is pure black                                                                        |
-| Colour despeckle   | Minimum blob area kept in the colour mask. Does not touch black text                              |
-| Colour sensitivity | Chroma threshold for what counts as colour content                                                |
-| Preserve colour    | Off folds coloured content into the ink layer, so stamps become solid black rather than vanishing |
-
-Under **Advanced**: illumination radius, threshold window, edge feather, target
-DPI, maximum long edge, binarisation method, and an invert toggle for light text
-on a dark background.
-
-Radius, window, despeckle area and feather are measured in pixels of the
-on-screen preview. The full-resolution render scales them to its own size, so
-what you see is what gets saved.
-
-The page is tagged with a DPI derived from its shape: an A-series, Letter or
-Legal aspect ratio is assumed to be that paper size, so the PDF Paperless builds
-comes out at the real physical size. Target DPI is only used for shapes that
-match no format, such as receipts.
-
-### Presets
-
-| Preset  | For                                          |
-| ------- | -------------------------------------------- |
-| Auto    | Balanced defaults                            |
-| Text    | Pure black on pure white, no colour          |
-| Receipt | Small text, tight threshold, no colour       |
-| Invoice | Keeps logos and stamps, cleans the body text |
-| Colour  | No binarisation, lighting flattened only     |
-| Photo   | Pass-through for pages that are mostly image |
-
-Touching any slider clears the preset selection but keeps the values. Presets
-only change the cleanup; your target DPI and maximum long edge are kept.
-
-## Camera selection
-
-Phones expose every physical lens as its own camera device, and
-`facingMode: 'environment'` is free to pick any of them. On most modern phones
-that means the ultra-wide or a virtual multi-camera, which is the wrong lens for
-a document: it is softer, wider, and distorts more towards the edges.
-
-The scanner does not trust `facingMode` alone. It:
-
-1. Opens a stream, because device labels stay hidden until permission is granted.
-2. Scores every label and picks the standard 1x lens — `Back Camera` on iOS,
-   `camera2 0, facing back` on Android. Ultra-wide, telephoto, macro, depth,
-   LiDAR and front lenses are scored down; a virtual multi-camera loses to a
-   plain single-lens entry.
-3. Reopens the stream on that device when it differs from what `facingMode` chose.
-4. Pins `zoom` to `1` and `focusMode` to `continuous` via `applyConstraints`, so
-   a virtual multi-camera cannot sit on its 0.5x end.
-
-The zoom and focus constraints are optional and best effort: platforms that do
-not implement them ignore the request and the stream still works. The badge in
-the top-left of the preview shows the selected lens and the zoom it was pinned to.
-
-If the automatic choice is wrong, open the gear icon and pick a lens under
-**Camera**. The choice is stored in `localStorage`. Device IDs are salted per
-origin and can rotate between sessions, so a stale value falls back to automatic
-selection rather than failing. A saved lens only applies to the rear camera;
-the flip button always switches to automatic front-camera selection.
+Restart Paperless after changing it. Add `http://localhost:5173` too if you run
+the dev server.
 
 ## Project layout
 
 ```
 src/
-  App.svelte                 screen state, worker orchestration, upload flow
-  components/                camera, crop, result, settings dialog, slider, toast
+  App.svelte                    screen routing
+  components/                   camera, document grid, page editor, crop editor, settings
   lib/
-    imaging/                 the pipeline — pure functions, no DOM
-      filters.ts             separable box filter (mirrored window)
-      normalize.ts           divide-by-background illumination flattening
-      binarize.ts            Sauvola / Niblack / Wolf / Adaptive / Otsu
-      color.ts               chroma-based colour mask
-      morphology.ts          erode, dilate, blob filter, mask feathering
-      composite.ts           the three-layer blend
-      warp.ts                homography + perspective warp, anti-aliased shrink
-      png.ts                 pHYs chunk injection
-      paper.ts               DPI estimate from the paper format
-      pipeline.ts            stage orchestration
-    worker/                  module worker + promise client
-    canvas.ts camera.ts      DOM and getUserMedia helpers
-    cameraPrefs.ts           the stored camera choice
-    paperless.ts             upload + task polling
-    presets.ts settings.ts   defaults, presets, persistence
-tests/                       vitest suites for every imaging module
-scripts/generate-icons.mjs   writes the PWA icons, no binary assets in the repo
+    imaging/                    pure functions over typed arrays, no DOM
+      quad.ts                   homography, corner ordering, perspective-correct aspect
+      resample.ts               bicubic perspective warp with anti-alias prefilter
+      background.ts             paper estimation and flattening
+      filters.ts                document / B&W / grey / colour filters
+      refine.ts                 sub-pixel edge snapping
+      box.ts components.ts      box/Gaussian filters, connected components
+    detect/heatmap.ts           DocAligner heatmaps → corners
+    pdf/                        PDF writer, PNG predictors, paper size
+    worker/                     detector (ONNX) and processor workers + clients
+    camera/camera.ts            lens selection, torch, full-resolution stills
+    store/                      session state, IndexedDB persistence
+    paperless.ts export.ts      upload and PDF assembly
+public/models/                  DocAligner model + licence
+tests/                          vitest suites, synthetic photo generator
 ```
 
-The imaging modules are pure functions over typed arrays with no DOM
-dependency, which is why they can be unit-tested in Node and run unchanged
-inside a Web Worker.
-
-## How it stays responsive
-
-All pixel work happens in a module Web Worker. The interactive preview runs on a
-900 px copy of the page; the full-resolution render only happens when you save or
-upload. Dragging a slider debounces for 80 ms and supersedes any in-flight
-preview, so only the newest settings are ever computed. A full-resolution render
-takes any pending preview out of the way first and re-runs it afterwards.
+Detection and image processing run in two Web Workers, so the camera preview
+and the UI never stall. The session (photos, crops, filters, title) is saved to
+IndexedDB, so a reload or a tab killed by the OS loses nothing.
 
 ## Limitations
 
-- **One page per scan.** Multi-page capture and PDF assembly are not implemented
-  yet; each scan produces one PNG and one Paperless document.
-- **Corners are manual.** There is no automatic edge detection. A good default
-  inset plus four drag handles is more predictable than a heuristic, but it is
-  more work per page.
-- **A-series pages are assumed to be A4.** A5 and A4 share an aspect ratio, so an
-  A5 page is tagged with A4's DPI and its PDF comes out A4-sized.
-- **No dewarping.** Curled pages and book spines are not straightened.
-- **Divide-by-background leaves a small residual at the page borders**, because
-  the estimation window there is mirrored rather than centred on real pixels. On
-  a real photograph this is around one level; it is only visible on synthetic
-  gradients steeper than any real lighting.
-- **Large solid colour blocks** are not detected as ink by Sauvola, which is
-  correct for text but means a big flat stamp relies on the colour mask to
-  survive. With colour preservation off it is folded into the ink layer instead.
-- **Lens selection depends on device labels.** Browsers only reveal them once
-  camera permission has been granted, and some Android builds expose generic
-  labels. When nothing scores above zero the app falls back to `facingMode`,
-  which may land on the ultra-wide; the manual picker in settings is the escape
-  hatch.
-- **The API token lives in `localStorage`.** Fine for a personal device; do not
-  use this on a shared browser.
+- **Curled pages are not dewarped.** Book spines and folded receipts are
+  straightened as planes.
+- **A-series pages are assumed to be A4** in the PDF page size: A5 and A4 share
+  an aspect ratio.
+- **Light colour fills in B&W mode** come out as an outline or a grey texture.
+  The Document filter keeps them in colour instead.
+- **iOS Safari has no ImageCapture**, so stills there come from the video
+  stream (up to 4K), not the full sensor.
+- **Threads are off.** GitHub Pages cannot send the cross-origin isolation
+  headers that WebAssembly threads need, so the model runs single-threaded.
 
 ## Privacy
 
-The app is static files. It has no analytics, no telemetry, and no server of its
-own. The only network request it makes is the upload to the Paperless URL you
-configure. The service worker caches the app shell so it keeps working offline
-after the first load.
+Static files only: no analytics, no telemetry, no server of its own. The only
+network requests are loading the app itself and the uploads to the Paperless
+URL you configure.
 
-## License
+## Licence
 
-No license file is included. Add one before distributing.
+See `THIRD_PARTY_NOTICES.md` for bundled components. The DocAligner model is
+Apache-2.0. No licence has been chosen for this project's own code yet.
