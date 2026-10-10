@@ -1,5 +1,5 @@
 import { processImage } from '../imaging/pipeline';
-import { quadOutputSize, warpPerspective } from '../imaging/warp';
+import { rectify } from '../imaging/warp';
 import type { SerializedImage, WorkerRequest, WorkerResponse } from './protocol';
 
 // Declared locally rather than pulling in the `webworker` lib, which conflicts
@@ -18,8 +18,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
   try {
     if (request.type === 'warp') {
-      const { width, height } = quadOutputSize(request.quad, request.maxLongEdge);
-      postResult(request.id, warpPerspective(request.image, request.quad, width, height));
+      postResult(request.id, rectify(request.image, request.quad, request.maxLongEdge));
       return;
     }
 

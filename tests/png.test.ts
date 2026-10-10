@@ -12,7 +12,7 @@ function chunk(type: string, data: Buffer): Buffer {
 }
 
 /** A structurally valid, if tiny, PNG. */
-function makePng(width: number, height: number): Uint8Array<ArrayBuffer> {
+function makePng(width: number, height: number, extra: Buffer[] = []): Uint8Array<ArrayBuffer> {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -41,6 +41,7 @@ function makePng(width: number, height: number): Uint8Array<ArrayBuffer> {
     Buffer.concat([
       Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
       chunk('IHDR', ihdr),
+      ...extra,
       chunk('IDAT', deflateSync(raw)),
       chunk('IEND', Buffer.alloc(0)),
     ]),
@@ -96,5 +97,22 @@ describe('addPngDpi', () => {
     };
     expect(await read(150)).toBe(Math.round(150 / 0.0254));
     expect(await read(600)).toBe(Math.round(600 / 0.0254));
+  });
+});
+
+describe('addPngDpi with an existing pHYs', () => {
+  it('replaces it instead of adding a second one', async () => {
+    const phys = Buffer.alloc(9);
+    phys.writeUInt32BE(2835, 0); // 72 dpi
+    phys.writeUInt32BE(2835, 4);
+    phys[8] = 1;
+    const original = makePng(2, 2, [chunk('pHYs', phys)]);
+    const result = new Uint8Array(await (await addPngDpi(new Blob([original]), 300)).arrayBuffer());
+
+    expect(result.length).toBe(original.length);
+    const text = String.fromCharCode(...result);
+    expect(text.split('pHYs').length - 1).toBe(1);
+    const view = new DataView(result.buffer);
+    expect(view.getUint32(41)).toBe(Math.round(300 / 0.0254));
   });
 });

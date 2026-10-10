@@ -8,7 +8,8 @@
   import Toast from './components/Toast.svelte';
   import { downscaleImage, imageToPngBlob } from './lib/canvas';
   import { loadCameraPreference } from './lib/cameraPrefs';
-  import type { ScanSettings } from './lib/imaging/pipeline';
+  import { scaleSettings, type ScanSettings } from './lib/imaging/pipeline';
+  import { estimateDpi } from './lib/imaging/paper';
   import { addPngDpi } from './lib/imaging/png';
   import type { Quad, RGBAImage } from './lib/imaging/types';
   import {
@@ -18,9 +19,9 @@
     waitForTask,
     type PaperlessConfig,
   } from './lib/paperless';
-  import { presetById, type PresetId } from './lib/presets';
+  import { matchPreset, presetById, type PresetId } from './lib/presets';
   import { loadSettings, saveSettings } from './lib/settings';
-  import { setBusy, showToast } from './lib/ui.svelte';
+  import { setBusy, showToast, ui } from './lib/ui.svelte';
   import { ProcessorClient, SupersededError } from './lib/worker/client';
 
   type Screen = 'camera' | 'crop' | 'result';
@@ -33,11 +34,14 @@
   let raw = $state.raw<RGBAImage | null>(null);
   let corners = $state.raw<Quad | null>(null);
   let warpedFull = $state.raw<RGBAImage | null>(null);
+  // The long-edge cap warpedFull was rendered with, so a changed setting re-warps.
+  let warpedFullEdge = 0;
   let warpedPreview = $state.raw<RGBAImage | null>(null);
   let preview = $state.raw<RGBAImage | null>(null);
-  let settings = $state<ScanSettings>(loadSettings());
+  const initialSettings = loadSettings();
+  let settings = $state<ScanSettings>(initialSettings);
   let paperless = $state<PaperlessConfig>(loadPaperlessConfig());
-  let presetId = $state<PresetId | null>('auto');
+  let presetId = $state<PresetId | null>(matchPreset(initialSettings));
   let processing = $state(false);
   let preferredDeviceId = $state<string | null>(loadCameraPreference());
   // Bumped when the camera preference changes so the preview reopens the stream.
@@ -58,6 +62,10 @@
 
   function message(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  function longEdge(image: RGBAImage): number {
+    return Math.max(image.width, image.height);
   }
 
   function defaultCorners(width: number, height: number): Quad {
@@ -85,13 +93,18 @@
 
   async function handleConfirmCrop() {
     const client = processor;
+    const source = raw;
     const quad = corners;
-    if (!client || !raw || !quad) return;
+    if (!client || !source || !quad) return;
 
+    const maxLongEdge = settings.output.maxLongEdge;
     setBusy(true, 'Rectifying…');
     try {
-      const warped = await client.warp(raw, quad, settings.output.maxLongEdge);
+      const warped = await client.warp(source, quad, maxLongEdge);
+      // The user may have started over while the warp was running.
+      if (screen !== 'crop' || raw !== source || corners !== quad) return;
       warpedFull = warped;
+      warpedFullEdge = maxLongEdge;
       warpedPreview = downscaleImage(warped, PREVIEW_MAX_EDGE);
       preview = null;
       screen = 'result';
@@ -122,14 +135,18 @@
     }
   }
 
+  function flushPreview() {
+    clearTimeout(previewTimer);
+    previewTimer = undefined;
+    // Persist here rather than on every input event: dragging a slider fires
+    // dozens of them and localStorage writes are synchronous.
+    saveSettings($state.snapshot(settings));
+    void renderPreview();
+  }
+
   function schedulePreview() {
     clearTimeout(previewTimer);
-    previewTimer = setTimeout(() => {
-      // Persist here rather than on every input event: dragging a slider fires
-      // dozens of them and localStorage writes are synchronous.
-      saveSettings($state.snapshot(settings));
-      void renderPreview();
-    }, PREVIEW_DEBOUNCE_MS);
+    previewTimer = setTimeout(flushPreview, PREVIEW_DEBOUNCE_MS);
   }
 
   function handleSettingsChange() {
@@ -138,18 +155,46 @@
   }
 
   function handlePreset(id: PresetId) {
-    settings = structuredClone(presetById(id).settings);
+    // Presets describe the cleanup, not the export: keep the user's DPI and size.
+    settings = {
+      ...structuredClone(presetById(id).settings),
+      output: $state.snapshot(settings.output),
+    };
     presetId = id;
     schedulePreview();
   }
 
   async function renderFullPage(): Promise<Blob | null> {
     const client = processor;
-    const source = warpedFull;
-    if (!client || !source) return null;
-    const processed = await client.process(source, $state.snapshot(settings));
-    const png = await imageToPngBlob(processed);
-    return addPngDpi(png, settings.output.targetDpi);
+    if (!client || !raw || !corners || !warpedPreview) return null;
+
+    // The worker runs one request at a time and a new one supersedes the old.
+    // Take any pending or in-flight preview out of the way so it cannot cancel
+    // the full render, and redo it afterwards so the preview is not left stale.
+    const previewInterrupted = previewTimer !== undefined || processing;
+    clearTimeout(previewTimer);
+    previewTimer = undefined;
+
+    try {
+      const maxLongEdge = settings.output.maxLongEdge;
+      if (!warpedFull || warpedFullEdge !== maxLongEdge) {
+        warpedFull = await client.warp(raw, corners, maxLongEdge);
+        warpedFullEdge = maxLongEdge;
+      }
+      const source = warpedFull;
+
+      // Pixel-unit settings are tuned on the preview; scale them to this size.
+      const scale = longEdge(source) / longEdge(warpedPreview);
+      const processed = await client.process(
+        source,
+        scaleSettings($state.snapshot(settings), scale),
+      );
+      const png = await imageToPngBlob(processed);
+      const dpi = estimateDpi(processed.width, processed.height, settings.output.targetDpi);
+      return addPngDpi(png, dpi);
+    } finally {
+      if (previewInterrupted) flushPreview();
+    }
   }
 
   function filename(): string {
@@ -212,6 +257,7 @@
     raw = null;
     corners = null;
     warpedFull = null;
+    warpedFullEdge = 0;
     warpedPreview = null;
     preview = null;
     screen = 'camera';
@@ -223,9 +269,14 @@
     <div class="brand">Doc Scanner</div>
     <div class="header-actions">
       {#if screen !== 'camera'}
-        <button class="btn-icon" onclick={reset}>New</button>
+        <button class="btn-icon" onclick={reset} disabled={ui.busy}>New</button>
       {/if}
-      <button class="btn-icon" onclick={() => settingsDialog?.open()} aria-label="Settings">
+      <button
+        class="btn-icon"
+        onclick={() => settingsDialog?.open()}
+        disabled={ui.busy}
+        aria-label="Settings"
+      >
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="3" />
           <path

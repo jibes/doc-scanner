@@ -63,7 +63,8 @@ export async function uploadDocument(
   const form = new FormData();
   form.append('document', file, filename);
   form.append('title', title);
-  if (config.tagIds.length > 0) form.append('tags', JSON.stringify(config.tagIds));
+  // Paperless reads tags as a repeated multipart field, one id per entry.
+  for (const tagId of config.tagIds) form.append('tags', String(tagId));
 
   let response: Response;
   try {

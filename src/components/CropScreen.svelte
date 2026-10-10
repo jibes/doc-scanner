@@ -1,6 +1,6 @@
 <script lang="ts">
   import { drawImageToCanvas } from '../lib/canvas';
-  import { clamp, containRect } from '../lib/geometry';
+  import { clamp, containRect, isConvexQuad } from '../lib/geometry';
   import type { Point, Quad, RGBAImage } from '../lib/imaging/types';
 
   interface Props {
@@ -42,6 +42,8 @@
     })),
   );
 
+  const valid = $derived(isConvexQuad(corners));
+
   const polygon = $derived(handles.map((point) => `${point.x},${point.y}`).join(' '));
 
   function toImage(clientX: number, clientY: number): Point {
@@ -79,7 +81,12 @@
 <section class="crop">
   <div class="stage" bind:this={stage}>
     <canvas bind:this={canvas}></canvas>
-    <svg class="overlay" viewBox="0 0 {size.width} {size.height}" aria-hidden="true">
+    <svg
+      class="overlay"
+      class:invalid={!valid}
+      viewBox="0 0 {size.width} {size.height}"
+      aria-hidden="true"
+    >
       <polygon points={polygon} />
     </svg>
     {#each handles as handle, index (index)}
@@ -93,11 +100,15 @@
     {/each}
   </div>
 
-  <p class="tip">Drag the corners onto the page edges.</p>
+  <p class="tip" class:warn={!valid}>
+    {valid
+      ? 'Drag the corners onto the page edges.'
+      : 'The corners cross over. Move them back into a four-sided shape.'}
+  </p>
 
   <div class="screen-actions">
     <button onclick={onCancel}>Cancel</button>
-    <button class="btn-primary" onclick={onConfirm}>Process</button>
+    <button class="btn-primary" onclick={onConfirm} disabled={!valid}>Process</button>
   </div>
 </section>
 
@@ -138,6 +149,11 @@
     stroke-width: 2;
   }
 
+  .overlay.invalid polygon {
+    fill: rgb(239 68 68 / 10%);
+    stroke: var(--err);
+  }
+
   .handle {
     position: absolute;
     width: 34px;
@@ -167,5 +183,9 @@
     color: var(--muted);
     text-align: center;
     background: var(--panel);
+  }
+
+  .tip.warn {
+    color: var(--err);
   }
 </style>

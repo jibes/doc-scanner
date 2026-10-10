@@ -202,35 +202,35 @@ export async function openCamera(options: OpenCameraOptions): Promise<OpenCamera
     );
   }
 
-  const preferred = options.preferredDeviceId ?? null;
+  let preferred = options.preferredDeviceId ?? null;
   let stream: MediaStream;
   try {
     stream = await requestStream(options.facing, preferred);
   } catch (error) {
     if (!preferred) throw error;
-    // Saved deviceIds rotate between sessions; fall back to automatic.
+    // Saved deviceIds rotate between sessions; fall back to automatic, which
+    // includes picking the standard lens below.
+    preferred = null;
     stream = await requestStream(options.facing, null);
   }
 
-  const first = stream.getVideoTracks()[0];
-  if (!first) {
-    stopStream(stream);
-    throw new Error('The camera produced no video track.');
-  }
-  let track = first;
+  let track = firstTrack(stream);
 
   if (!preferred) {
     const devices = await listCameras();
     const best = pickCamera(devices, options.facing);
-    if (best && best.deviceId && best.deviceId !== track.getSettings().deviceId) {
+    const currentId = track.getSettings().deviceId;
+    if (best && best.deviceId && best.deviceId !== currentId) {
+      // Many phones cannot open two cameras at once, so release the first
+      // stream before asking for the better lens.
+      stopStream(stream);
       try {
-        const better = await requestStream(options.facing, best.deviceId);
-        stopStream(stream);
-        stream = better;
-        track = stream.getVideoTracks()[0] ?? track;
+        stream = await requestStream(options.facing, best.deviceId);
       } catch {
-        // Keep the stream we already have.
+        // Reopen what we had.
+        stream = await requestStream(options.facing, currentId ?? null);
       }
+      track = firstTrack(stream);
     }
   }
 
@@ -244,6 +244,15 @@ export async function openCamera(options: OpenCameraOptions): Promise<OpenCamera
       focusMode: lens.focusMode,
     },
   };
+}
+
+function firstTrack(stream: MediaStream): MediaStreamTrack {
+  const track = stream.getVideoTracks()[0];
+  if (!track) {
+    stopStream(stream);
+    throw new Error('The camera produced no video track.');
+  }
+  return track;
 }
 
 export function stopStream(stream: MediaStream | null): void {

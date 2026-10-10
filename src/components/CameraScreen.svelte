@@ -29,23 +29,38 @@
   // Deliberately not $state: the effect below writes it, and making it
   // reactive would retrigger the effect on every open.
   let stream: MediaStream | null = null;
+  // Incremented by every open and by teardown, so a slow open that resolves
+  // after the screen moved on (or after a newer open) releases its camera
+  // instead of leaving it running.
+  let openToken = 0;
 
   async function open() {
+    const token = ++openToken;
     stopStream(stream);
     stream = null;
     ready = false;
     error = '';
     selection = null;
     try {
-      const result = await openCamera({ facing, preferredDeviceId });
+      const result = await openCamera({
+        facing,
+        // The saved lens is a rear-camera choice; flipping to the front camera
+        // has to ignore it, or the exact deviceId would win and flip would do nothing.
+        preferredDeviceId: facing === 'environment' ? preferredDeviceId : null,
+      });
+      if (token !== openToken) {
+        stopStream(result.stream);
+        return;
+      }
       stream = result.stream;
       selection = result.selection;
       if (video) {
         video.srcObject = stream;
         await video.play().catch(() => undefined);
       }
-      ready = true;
+      if (token === openToken) ready = true;
     } catch (cause) {
+      if (token !== openToken) return;
       error = cause instanceof Error ? cause.message : String(cause);
     }
   }
@@ -56,7 +71,11 @@
     void preferredDeviceId;
     void facing;
     void open();
-    return () => stopStream(stream);
+    return () => {
+      openToken++;
+      stopStream(stream);
+      stream = null;
+    };
   });
 
   function flip() {

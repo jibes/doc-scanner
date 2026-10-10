@@ -42,6 +42,32 @@ export interface ScanSettings {
 export type Stage = 'normalize' | 'binarize' | 'color' | 'composite';
 
 /**
+ * Rescale the pixel-unit parameters for an image `scale` times larger than the
+ * one they were tuned on.
+ *
+ * Radius, window, feather and grow are lengths and scale linearly; the blob
+ * area scales with the square. Without this the interactive preview (a
+ * downscaled copy) and the full-resolution render would apply windows that
+ * cover different fractions of the page and produce visibly different output.
+ */
+export function scaleSettings(settings: ScanSettings, scale: number): ScanSettings {
+  if (!(scale > 0) || scale === 1) return settings;
+  const length = (value: number) => (value > 0 ? Math.max(1, Math.round(value * scale)) : 0);
+  const window = Math.max(3, Math.round(settings.binarize.window * scale)) | 1;
+  return {
+    ...settings,
+    normalize: { ...settings.normalize, radius: length(settings.normalize.radius) },
+    binarize: { ...settings.binarize, window },
+    color: {
+      ...settings.color,
+      minArea: settings.color.minArea > 0 ? Math.round(settings.color.minArea * scale * scale) : 0,
+      grow: length(settings.color.grow),
+    },
+    composite: { ...settings.composite, feather: length(settings.composite.feather) },
+  };
+}
+
+/**
  * Run the full cleanup pipeline on a rectified page.
  *
  * Order matters: illumination is flattened first so that thresholding sees a

@@ -120,3 +120,62 @@ export function warpPerspective(
 
   return out;
 }
+
+/** Average each `factor x factor` block into one pixel. Edge blocks average what exists. */
+export function downsampleBox(src: RGBAImage, factor: number): RGBAImage {
+  const f = Math.max(1, Math.floor(factor));
+  if (f === 1) return src;
+  const width = Math.max(1, Math.ceil(src.width / f));
+  const height = Math.max(1, Math.ceil(src.height / f));
+  const out = createImage(width, height);
+  const sd = src.data;
+
+  for (let y = 0; y < height; y++) {
+    const sy0 = y * f;
+    const sy1 = Math.min(src.height, sy0 + f);
+    for (let x = 0; x < width; x++) {
+      const sx0 = x * f;
+      const sx1 = Math.min(src.width, sx0 + f);
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0, p = (sy * src.width + sx0) * 4; sx < sx1; sx++, p += 4) {
+          r += sd[p];
+          g += sd[p + 1];
+          b += sd[p + 2];
+        }
+      }
+      const count = (sy1 - sy0) * (sx1 - sx0);
+      const o = (y * width + x) * 4;
+      out.data[o] = r / count;
+      out.data[o + 1] = g / count;
+      out.data[o + 2] = b / count;
+      out.data[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/**
+ * Rectify a quad into a page no longer than `maxLongEdge`.
+ *
+ * Bilinear sampling only looks at four source pixels, so shrinking the page by
+ * more than 2x would alias fine print into jagged noise. The source is
+ * box-filtered down first so the warp itself never minifies by 2x or more.
+ */
+export function rectify(src: RGBAImage, quad: Quad, maxLongEdge: number): RGBAImage {
+  const { width, height } = quadOutputSize(quad, maxLongEdge);
+  const unscaled = quadOutputSize(quad, 0);
+  const factor = Math.floor(Math.max(unscaled.width, unscaled.height) / Math.max(width, height));
+  if (factor < 2) return warpPerspective(src, quad, width, height);
+
+  const small = downsampleBox(src, factor);
+  // Map pixel centres: source pixel x sits at (x + 0.5) / f - 0.5 in the reduced image.
+  const map = ([x, y]: readonly [number, number]): [number, number] => [
+    (x + 0.5) / factor - 0.5,
+    (y + 0.5) / factor - 0.5,
+  ];
+  const scaled: Quad = [map(quad[0]), map(quad[1]), map(quad[2]), map(quad[3])];
+  return warpPerspective(small, scaled, width, height);
+}

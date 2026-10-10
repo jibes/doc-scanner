@@ -31,10 +31,10 @@ const SETTINGS_KEY = 'doc-scanner.settings.v1';
 export function loadSettings(): ScanSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
+    if (!raw) return structuredClone(DEFAULT_SETTINGS);
     return mergeSettings(DEFAULT_SETTINGS, JSON.parse(raw) as DeepPartial<ScanSettings>);
   } catch {
-    return DEFAULT_SETTINGS;
+    return structuredClone(DEFAULT_SETTINGS);
   }
 }
 

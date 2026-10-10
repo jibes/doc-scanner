@@ -46,6 +46,13 @@
     { value: 'off', label: 'Off (no binarisation)' },
   ];
 
+  // A higher threshold sensitivity `k` thins strokes, so the "boldness" the user
+  // sees runs the other way: 0 is the thinnest k, 100 the boldest.
+  const K_MIN = 0.05;
+  const K_MAX = 0.4;
+  const toBoldness = (k: number) => Math.round(((K_MAX - k) / (K_MAX - K_MIN)) * 100);
+  const fromBoldness = (b: number) => +(K_MAX - (b / 100) * (K_MAX - K_MIN)).toFixed(4);
+
   function update(mutate: () => void) {
     mutate();
     onSettingsChange();
@@ -93,12 +100,10 @@
       />
       <Slider
         label="Text boldness"
-        value={settings.binarize.k}
-        min={0.05}
-        max={0.4}
-        step={0.01}
-        format={(value) => value.toFixed(2)}
-        onchange={(value) => update(() => (settings.binarize.k = value))}
+        value={toBoldness(settings.binarize.k)}
+        min={0}
+        max={100}
+        onchange={(value) => update(() => (settings.binarize.k = fromBoldness(value)))}
       />
       <Slider
         label="Text darkness"
@@ -108,7 +113,7 @@
         onchange={(value) => update(() => (settings.composite.text = value))}
       />
       <Slider
-        label="Despeckle"
+        label="Colour despeckle"
         value={settings.color.minArea}
         min={0}
         max={100}

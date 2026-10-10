@@ -23,7 +23,7 @@ own Paperless server.
 | Binarise  | Sauvola local thresholding (also Adaptive, Niblack, Wolf, Otsu)                                         |
 | Colour    | Chroma-based mask keeps logos, stamps and signatures in their original pixels                           |
 | Composite | Three normalised layers blended into the final page                                                     |
-| Export    | PNG with a `pHYs` chunk so OCRmyPDF knows the intended DPI                                              |
+| Export    | PNG with a `pHYs` chunk sized to the detected paper format, so the PDF comes out at real size           |
 | Upload    | `POST /api/documents/post_document/`, then poll the ingest task                                         |
 
 ### The two guarantees
@@ -53,7 +53,7 @@ show up locally rather than after a deploy.
 
 ```bash
 npm run check        # svelte-check + tsc for app, node and test configs
-npm test             # vitest, 65 tests over the imaging pipeline and camera selection
+npm test             # vitest, 78 tests over the imaging pipeline and camera selection
 npm run lint         # eslint
 npm run format       # prettier
 npm run build        # -> dist/
@@ -112,15 +112,24 @@ The four sliders most people touch:
 | Control            | Effect                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------- |
 | Paper whiteness    | Background level. 255 is pure white; lower it for a softer look                                   |
-| Text boldness      | Sauvola `k`. Higher thickens strokes, lower thins them                                            |
+| Text boldness      | Inverse of the Sauvola `k` (0–100). Higher thickens strokes, lower thins them                     |
 | Text darkness      | Ink level. 0 is pure black                                                                        |
-| Despeckle          | Minimum blob area kept in the colour mask                                                         |
+| Colour despeckle   | Minimum blob area kept in the colour mask. Does not touch black text                              |
 | Colour sensitivity | Chroma threshold for what counts as colour content                                                |
 | Preserve colour    | Off folds coloured content into the ink layer, so stamps become solid black rather than vanishing |
 
 Under **Advanced**: illumination radius, threshold window, edge feather, target
 DPI, maximum long edge, binarisation method, and an invert toggle for light text
 on a dark background.
+
+Radius, window, despeckle area and feather are measured in pixels of the
+on-screen preview. The full-resolution render scales them to its own size, so
+what you see is what gets saved.
+
+The page is tagged with a DPI derived from its shape: an A-series, Letter or
+Legal aspect ratio is assumed to be that paper size, so the PDF Paperless builds
+comes out at the real physical size. Target DPI is only used for shapes that
+match no format, such as receipts.
 
 ### Presets
 
@@ -133,7 +142,8 @@ on a dark background.
 | Colour  | No binarisation, lighting flattened only     |
 | Photo   | Pass-through for pages that are mostly image |
 
-Touching any slider clears the preset selection but keeps the values.
+Touching any slider clears the preset selection but keeps the values. Presets
+only change the cleanup; your target DPI and maximum long edge are kept.
 
 ## Camera selection
 
@@ -160,7 +170,8 @@ the top-left of the preview shows the selected lens and the zoom it was pinned t
 If the automatic choice is wrong, open the gear icon and pick a lens under
 **Camera**. The choice is stored in `localStorage`. Device IDs are salted per
 origin and can rotate between sessions, so a stale value falls back to automatic
-selection rather than failing.
+selection rather than failing. A saved lens only applies to the rear camera;
+the flip button always switches to automatic front-camera selection.
 
 ## Project layout
 
@@ -176,8 +187,9 @@ src/
       color.ts               chroma-based colour mask
       morphology.ts          erode, dilate, blob filter, mask feathering
       composite.ts           the three-layer blend
-      warp.ts                homography + perspective warp
+      warp.ts                homography + perspective warp, anti-aliased shrink
       png.ts                 pHYs chunk injection
+      paper.ts               DPI estimate from the paper format
       pipeline.ts            stage orchestration
     worker/                  module worker + promise client
     canvas.ts camera.ts      DOM and getUserMedia helpers
@@ -197,7 +209,8 @@ inside a Web Worker.
 All pixel work happens in a module Web Worker. The interactive preview runs on a
 900 px copy of the page; the full-resolution render only happens when you save or
 upload. Dragging a slider debounces for 80 ms and supersedes any in-flight
-request, so only the newest settings are ever computed.
+preview, so only the newest settings are ever computed. A full-resolution render
+takes any pending preview out of the way first and re-runs it afterwards.
 
 ## Limitations
 
@@ -206,6 +219,8 @@ request, so only the newest settings are ever computed.
 - **Corners are manual.** There is no automatic edge detection. A good default
   inset plus four drag handles is more predictable than a heuristic, but it is
   more work per page.
+- **A-series pages are assumed to be A4.** A5 and A4 share an aspect ratio, so an
+  A5 page is tagged with A4's DPI and its PDF comes out A4-sized.
 - **No dewarping.** Curled pages and book spines are not straightened.
 - **Divide-by-background leaves a small residual at the page borders**, because
   the estimation window there is mirrored rather than centred on real pixels. On

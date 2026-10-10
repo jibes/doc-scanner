@@ -20,8 +20,9 @@ function preset(
 }
 
 /**
- * Presets are just named bundles of settings — nothing more. Touching any
- * slider afterwards leaves the preset selected but the values customised.
+ * Presets are just named bundles of cleanup settings — nothing more. Touching
+ * any slider afterwards deselects the preset. The output group (DPI, size) is
+ * not part of a preset; applying one keeps the user's export settings.
  */
 export const PRESETS: readonly Preset[] = [
   preset('auto', 'Auto', 'Balanced defaults for a typical printed page.', {}),
@@ -58,4 +59,18 @@ export const PRESETS: readonly Preset[] = [
 
 export function presetById(id: PresetId): Preset {
   return PRESETS.find((p) => p.id === id) ?? PRESETS[0];
+}
+
+type CleanupGroup = Exclude<keyof ScanSettings, 'output'>;
+const CLEANUP_GROUPS: CleanupGroup[] = ['normalize', 'binarize', 'color', 'composite'];
+
+/** The preset whose cleanup settings exactly match, or null for custom settings. */
+export function matchPreset(settings: ScanSettings): PresetId | null {
+  const matches = (preset: Preset) =>
+    CLEANUP_GROUPS.every((group) => {
+      const expected = preset.settings[group] as unknown as Record<string, unknown>;
+      const actual = settings[group] as unknown as Record<string, unknown>;
+      return Object.keys(expected).every((key) => expected[key] === actual[key]);
+    });
+  return PRESETS.find(matches)?.id ?? null;
 }

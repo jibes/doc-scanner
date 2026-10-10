@@ -7,7 +7,10 @@ export interface BinarizeOptions {
   method: BinarizeMethod;
   /** Local window size in pixels. Forced odd, minimum 3. */
   window: number;
-  /** Sauvola / Niblack / Wolf sensitivity. */
+  /**
+   * Sauvola / Niblack / Wolf sensitivity. For every method a higher value
+   * lowers the threshold, so fewer pixels become ink and strokes get thinner.
+   */
   k: number;
   /** Offset for the `adaptive` method. */
   c: number;
@@ -75,7 +78,9 @@ export function binarize(
         threshold = m * (1 + k * (s / R - 1));
         break;
       case 'niblack':
-        threshold = m + k * s;
+        // Niblack is usually written m + k*s with a negative k; negating here
+        // keeps k's direction consistent with Sauvola and Wolf.
+        threshold = m - k * s;
         break;
       case 'wolf':
         threshold = m - k * (1 - s / R) * (m - globalMin);
