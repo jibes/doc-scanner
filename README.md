@@ -74,7 +74,7 @@ Around that:
   so filled logos are not hollowed out; a light tint fills its own
   surroundings, so it does not turn into a black block.
 - **Faded print is strengthened, not dropped.** When even the darkest print
-  on the page (the ink level over a few words' area) is light grey, the
+  on the page (the ink level over a few lines' area) is light grey, the
   page's contrast is stretched (up to 4×) until it is dark grey, so a washed
   out copy comes out legible instead of blank. A crease or a speck covers too
   little area to count as print.
