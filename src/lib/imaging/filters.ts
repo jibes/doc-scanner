@@ -1,4 +1,4 @@
-import { analysePaper, flattenPaper, PICTURE, type PaperAnalysis } from './background';
+import { analysePaper, flattenPaper, PAPER, PICTURE, type PaperAnalysis } from './background';
 import { boxMean, darkClassLevel, gaussian, halve, minFilter, sampleHalf } from './box';
 import { keepBlobs, measureBlobs } from './cleanup';
 import { dilate, labelComponents, removeSmallComponents } from './components';
@@ -519,6 +519,66 @@ function onPaper(image: RGBAImage, tint: readonly [number, number, number]): RGB
 /** Colour layer pixels this close to grey (max − min, 0..255) are left grey. */
 const NEUTRAL_CHROMA = 10;
 
+/** A grey "picture" with fewer mid-tones than this (share of its pixels) is print. */
+const PRINT_MIDTONES = 0.3;
+/** ...and with a mean chroma (max − min, 0..255) below this. */
+const PRINT_CHROMA = 12;
+
+/** A picture whose mean chroma (max − min, 0..255) is below this is grey. */
+const GREY_PICTURE_CHROMA = 8;
+
+/**
+ * Check the areas the paper analysis took for pictures at full resolution.
+ *
+ * Some are plain black-on-white print, too large or dense to be lettering at
+ * the analysis' coarse scale: a barcode, a QR code, a block of bold type.
+ * Almost all their pixels are near black or near white, where a photo has
+ * mid-tones. They are handed back to the ink pipeline (as paper), so they
+ * come out crisp black rather than as a dark grey picture. Mutates `analysis`.
+ *
+ * Returns, per content area id, 1 for a picture that is grey but for a faint
+ * cast (a grey photo, soft thermal print): it is composited as grey, so a
+ * grey page stays one channel in the PDF instead of three.
+ */
+function checkPictures(analysis: PaperAnalysis, flat: RGBAImage): Uint8Array {
+  const { regions, regionIds } = analysis;
+  const { cols, rows, block } = analysis.surface;
+  let ids = 0;
+  for (let i = 0; i < regions.length; i++) {
+    if (regions[i] === PICTURE) ids = Math.max(ids, regionIds[i] + 1);
+  }
+  const grey = new Uint8Array(ids);
+  if (ids === 0) return grey;
+  const count = new Float64Array(ids);
+  const mid = new Float64Array(ids);
+  const chroma = new Float64Array(ids);
+  const { width, height, data } = flat;
+  for (let y = 0; y < height; y++) {
+    const row = Math.min(rows - 1, Math.floor(y / block)) * cols;
+    for (let x = 0; x < width; x++) {
+      const cell = row + Math.min(cols - 1, Math.floor(x / block));
+      if (regions[cell] !== PICTURE) continue;
+      const id = regionIds[cell];
+      const p = (y * width + x) * 4;
+      const r = data[p];
+      const g = data[p + 1];
+      const b = data[p + 2];
+      const l = luma01(r, g, b);
+      count[id]++;
+      if (l > 0.35 && l < 0.8) mid[id]++;
+      chroma[id] += Math.max(r, g, b) - Math.min(r, g, b);
+    }
+  }
+  for (let id = 0; id < ids; id++)
+    grey[id] = chroma[id] / Math.max(1, count[id]) < GREY_PICTURE_CHROMA ? 1 : 0;
+  for (let i = 0; i < regions.length; i++) {
+    if (regions[i] !== PICTURE) continue;
+    const id = regionIds[i];
+    const n = Math.max(1, count[id]);
+    if (mid[id] / n < PRINT_MIDTONES && chroma[id] / n < PRINT_CHROMA) regions[i] = PAPER;
+  }
+  return grey;
+}
 /**
  * Per output pixel, 1 inside photos, colour areas and dark areas (which the
  * Document filter shows as they are), 0 on paper and pale neutral tints.
@@ -566,6 +626,7 @@ export function applyFilter(
 
   const analysis = analysePaper(src);
   const flat = flattenPaper(src, analysis.surface);
+  const greyPictures = checkPictures(analysis, flat);
   const picture = pictureWeight(analysis, src.width, src.height);
   if (filter === 'color') {
     return onPaper(
@@ -675,16 +736,34 @@ export function applyFilter(
   const { cols, rows, block } = analysis.surface;
   const cd = color.data;
   for (let i = 0, p = 0; i < ink.length; i++, p += 4) {
+    let cell = -1;
+    if (picture) {
+      const x = i % src.width;
+      const y = (i - x) / src.width;
+      cell =
+        Math.min(rows - 1, Math.floor(y / block)) * cols +
+        Math.min(cols - 1, Math.floor(x / block));
+    }
     const inPicture = picture !== null && picture.data[i] > 0;
     const w = inPicture ? Math.max(weight.data[i], picture.data[i]) : weight.data[i];
     if (w <= 0) continue;
     let r = cd[p];
     let g = cd[p + 1];
     let b = cd[p + 2];
-    // Outside photos, a colour that is grey but for a faint cast adds no
-    // colour, only noise: blending it in would make an otherwise grey page
-    // need three channels in the PDF (three times the size).
-    if (!inPicture && Math.max(r, g, b) - Math.min(r, g, b) <= NEUTRAL_CHROMA) continue;
+    const greyPicture =
+      cell >= 0 && analysis.regions[cell] === PICTURE && greyPictures[analysis.regionIds[cell]];
+    if (cell < 0 || analysis.regions[cell] !== PICTURE) {
+      // Outside photos (and on their soft rim), a colour that is grey but for
+      // a faint cast adds no colour, only noise: blending it in would make an
+      // otherwise grey page need three channels in the PDF. Judged before
+      // enhancement, which strengthens a cast.
+      const fd = flat.data;
+      if (
+        Math.max(fd[p], fd[p + 1], fd[p + 2]) - Math.min(fd[p], fd[p + 1], fd[p + 2]) <=
+        NEUTRAL_CHROMA
+      )
+        continue;
+    }
     if (fills) {
       const x = i % src.width;
       const y = (i - x) / src.width;
@@ -704,11 +783,40 @@ export function applyFilter(
         }
       }
     }
+    // A grey photo or soft grey print is composited as grey.
+    if (greyPicture) r = g = b = luma01(r, g, b) * 255;
     od[p] += (r - od[p]) * w;
     od[p + 1] += (g - od[p + 1]) * w;
     od[p + 2] += (b - od[p + 2]) * w;
   }
+  greyIfColourless(out);
   return out;
+}
+
+/** Pixels at least this colourful (max − min, 0..255) count as colour. */
+const VISIBLE_CHROMA = 24;
+/** A page with fewer colour pixels than this has no colour worth keeping. */
+const MIN_COLOUR_PIXELS = 64;
+
+/**
+ * Make a page grey when what colour it has is only a faint cast or colour
+ * fringes along edges: a few dozen colour pixels on a 300 dpi page are
+ * invisible, and keeping them would store the page in three channels, three
+ * times the size of one. Mutates `image`.
+ */
+function greyIfColourless(image: RGBAImage): void {
+  const d = image.data;
+  let coloured = 0;
+  let tinted = false;
+  for (let p = 0; p < d.length; p += 4) {
+    const c = Math.max(d[p], d[p + 1], d[p + 2]) - Math.min(d[p], d[p + 1], d[p + 2]);
+    if (c >= VISIBLE_CHROMA && ++coloured >= MIN_COLOUR_PIXELS) return;
+    if (c > 0) tinted = true;
+  }
+  if (!tinted) return;
+  for (let p = 0; p < d.length; p += 4) {
+    d[p] = d[p + 1] = d[p + 2] = Math.round(luma01(d[p], d[p + 1], d[p + 2]) * 255);
+  }
 }
 
 /**
