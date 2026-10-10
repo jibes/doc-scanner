@@ -8,6 +8,7 @@
   import { isBlurred } from '../lib/imaging/sharpness';
   import { isConfigured, uploadDocument, waitForTask } from '../lib/paperless';
   import type { AppSettings } from '../lib/settings';
+  import { pageThumbnail } from '../lib/services';
   import { session } from '../lib/store/session.svelte';
   import { busy, errorMessage, idle, toast } from '../lib/ui.svelte';
   import Icon from './Icon.svelte';
@@ -81,7 +82,11 @@
     name: string,
     docTitle: string,
     pages: number,
-    { retry = false, download = false } = {},
+    {
+      retry = false,
+      download = false,
+      thumb,
+    }: { retry?: boolean; download?: boolean; thumb?: Blob } = {},
   ) {
     // A second refusal, despite the fresh tap, falls back to a download.
     const how = await saveFile(pdf, name, { deferShare: !retry, download });
@@ -89,14 +94,16 @@
       toast('Your PDF is ready.', 'good', {
         label: download ? 'Download' : 'Share',
         run: () =>
-          void deliver(pdf, name, docTitle, pages, { retry: true, download }).catch(shareFailed),
+          void deliver(pdf, name, docTitle, pages, { retry: true, download, thumb }).catch(
+            shareFailed,
+          ),
       });
       return;
     }
     // Closing the share sheet sends nothing anywhere.
     if (how === 'cancelled') return;
     haptic('success');
-    void recordHistory({ title: docTitle, kind: 'pdf', pages, bytes: pdf.size, pdf });
+    void recordHistory({ title: docTitle, kind: 'pdf', pages, bytes: pdf.size, pdf, thumb });
     offerNewDocument(
       how === 'downloaded' ? `Saved ${name} (${(pdf.size / 1024).toFixed(0)} KB)` : 'Shared.',
     );
@@ -111,8 +118,9 @@
     try {
       // Saved and shared PDFs carry the OCR text layer.
       const pdf = await build(true);
+      const thumb = await pageThumbnail(session.pages[0]);
       idle();
-      await deliver(pdf, pdfFilename(title), title, session.pages.length, { download });
+      await deliver(pdf, pdfFilename(title), title, session.pages.length, { download, thumb });
     } catch (error) {
       haptic('error');
       toast(`Could not create the PDF: ${errorMessage(error)}`, 'err');
@@ -130,6 +138,7 @@
     try {
       // Paperless runs its own OCR on upload, so the PDF stays image-only.
       const pdf = await build(false);
+      const thumb = await pageThumbnail(session.pages[0]);
       busy('Uploading to Paperless…');
       const task = await uploadDocument(settings.paperless, pdf, pdfFilename(title), title);
       const entry = recordHistory({
@@ -140,6 +149,7 @@
         pdf,
         outcome: 'pending',
         taskId: task,
+        thumb,
       });
       busy('Paperless is processing it…');
       let result: Awaited<ReturnType<typeof waitForTask>>;
@@ -176,7 +186,15 @@
   }
 
   function discard() {
-    if (confirm(`Discard all ${session.pages.length} pages?`)) session.clear();
+    const n = session.pages.length;
+    // History keeps its own copy of every PDF saved or uploaded; this only
+    // drops the pages being worked on.
+    if (
+      confirm(
+        `Discard the ${n} scanned ${n === 1 ? 'page' : 'pages'}? PDFs you saved or sent to Paperless stay in History.`,
+      )
+    )
+      session.clear();
   }
 
   /* ---------------------------------------------- drag-and-drop order ---- */
@@ -368,7 +386,8 @@
       class="icon"
       onclick={discard}
       disabled={!session.pages.length}
-      aria-label="Discard document"
+      aria-label="Discard scanned pages"
+      title="Discard scanned pages"
     >
       <Icon name="trash" />
     </button>
@@ -395,7 +414,7 @@
       onclick={() => void upload()}
       disabled={!session.pages.length}
     >
-      <Icon name="upload" /> Upload
+      <Icon name="leaf" /> Paperless
     </button>
   </div>
 </section>

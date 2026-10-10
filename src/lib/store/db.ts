@@ -35,6 +35,8 @@ export interface HistoryEntry {
   outcome?: 'success' | 'failure' | 'pending';
   /** For uploads: the Paperless consumption task, to look up a pending result later. */
   taskId?: string;
+  /** A small JPEG of the first page, for the list. Older entries have none. */
+  thumb?: Blob;
 }
 
 const DB_NAME = 'doc-scanner';
