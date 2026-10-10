@@ -169,9 +169,11 @@ export function detectionBoxes(
     const half = line.height / 2 + grow;
     x0 = Math.max(0, x0 - grow);
     x1 = Math.min(width, x1 + grow);
-    // Centre heights at the grown ends.
-    const yl = line.centre(x0 - minX[l]);
-    const yr = line.centre(x1 - minX[l]);
+    // Centre heights at the grown ends. The fit is over pixel rows and
+    // columns (centres at whole numbers); boxes are in edge coordinates,
+    // where pixel i spans i..i+1, like `x0` and `x1` above.
+    const yl = line.centre(x0 - minX[l] - 0.5) + 0.5;
+    const yr = line.centre(x1 - minX[l] - 0.5) + 0.5;
     boxes.push({
       x0,
       y0: Math.max(0, Math.min(yl, yr) - half),
@@ -183,12 +185,30 @@ export function detectionBoxes(
       height: half * 2,
     });
   }
-  // Reading order: top to bottom, then left to right within a line.
-  boxes.sort((a, b) => {
-    const sameLine = Math.abs((a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2) < (a.y1 - a.y0) / 2;
-    return sameLine ? a.x0 - b.x0 : a.y0 - b.y0;
-  });
-  return boxes;
+  return readingOrder(boxes);
+}
+
+/**
+ * Top to bottom, then left to right within a line. Boxes are grouped into
+ * lines first and each line sorted on its own: a pairwise "same line?"
+ * comparator is not transitive, and sort() gives arbitrary orders for those.
+ */
+export function readingOrder(boxes: TextBox[]): TextBox[] {
+  const centre = (b: TextBox) => (b.y0 + b.y1) / 2;
+  // Ties broken on position, so the input order never matters.
+  const byCentre = [...boxes].sort((a, b) => centre(a) - centre(b) || a.x0 - b.x0 || a.y0 - b.y0);
+  const lines: TextBox[][] = [];
+  for (const box of byCentre) {
+    const line = lines.at(-1);
+    const first = line?.[0];
+    // On the line if its centre is within half the smaller box's height of
+    // the line's first box.
+    const near =
+      first && centre(box) - centre(first) < Math.min(first.y1 - first.y0, box.y1 - box.y0) / 2;
+    if (line && near) line.push(box);
+    else lines.push([box]);
+  }
+  return lines.flatMap((line) => line.sort((a, b) => a.x0 - b.x0));
 }
 
 /**
@@ -418,11 +438,14 @@ export function lineWords(
   const { yl, yr, height } = lineOf(box);
   const centreAt = (x: number) => yl + ((yr - yl) * (x - box.x0)) / Math.max(1, width);
   const xAt = (t: number) => box.x0 + ((t + 0.5) / (steps * filled)) * width;
-  const half = Math.max(1, width / Math.max(1, line.text.length) / 2);
+  // One step per character, and characters outside the BMP (the dictionary
+  // has a few maths letters) are two UTF-16 units: index by code point.
+  const chars = Array.from(line.text);
+  const half = Math.max(1, width / Math.max(1, chars.length) / 2);
   let start = -1;
   const flush = (end: number) => {
     if (start < 0) return;
-    const text = line.text.slice(start, end).trim();
+    const text = chars.slice(start, end).join('').trim();
     if (text) {
       const x0 = Math.max(box.x0, xAt(line.steps[start]) - half);
       const x1 = Math.min(box.x1, xAt(line.steps[end - 1]) + half);
@@ -438,10 +461,10 @@ export function lineWords(
     }
     start = -1;
   };
-  for (let i = 0; i < line.text.length; i++) {
-    if (line.text[i] === ' ') flush(i);
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === ' ') flush(i);
     else if (start < 0) start = i;
   }
-  flush(line.text.length);
+  flush(chars.length);
   return words;
 }
