@@ -11,6 +11,11 @@ export function processor(): ProcessorClient {
   return processorInstance;
 }
 
+/** Let the processing worker drop what it keeps for a page that is gone. */
+export function forgetPage(pageId: string): void {
+  processorInstance?.forget(pageId);
+}
+
 /**
  * The page detector (ONNX model) worker, created on first use and again after
  * a failure. Hold on to the returned client rather than calling this per

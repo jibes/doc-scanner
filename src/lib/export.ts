@@ -51,7 +51,7 @@ export async function exportPdf(
   for (let i = 0; i < pages.length; i++) {
     onProgress(i, pages.length);
     const page = pages[i];
-    const { image, width, height, words } = await encodedPage(page, settings);
+    const { image, width, height, words } = await encodedPage(page, settings, { text: searchable });
     const size = pageSizePoints(width, height, FALLBACK_DPI);
     out.push({
       pixelWidth: width,
