@@ -51,7 +51,7 @@ export async function exportPdf(
   for (let i = 0; i < pages.length; i++) {
     onProgress(i, pages.length);
     const page = pages[i];
-    const { image, width, height, words } = await encodedPage(page, settings);
+    const { image, width, height, words } = await encodedPage(page, settings, { text: searchable });
     const size = pageSizePoints(width, height, FALLBACK_DPI);
     out.push({
       pixelWidth: width,
@@ -66,15 +66,45 @@ export async function exportPdf(
   return buildPdf(out, { title });
 }
 
+/** Phones and tablets, where the share sheet is how files leave the browser. */
+function mobile(): boolean {
+  if (/Android|iPhone|iPad/i.test(navigator.userAgent)) return true;
+  // iPadOS asks for desktop sites and reports itself as a Mac.
+  return /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1;
+}
+
+/**
+ * What became of a file:
+ * - `shared`: handed to the share sheet and sent somewhere;
+ * - `cancelled`: the user closed the share sheet;
+ * - `downloaded`: saved through the browser instead;
+ * - `needs-tap`: only with `deferShare`. The browser refused to open the
+ *   share sheet because the tap that started the export has expired (it
+ *   lasts a few seconds; building a PDF takes longer). Call again from a
+ *   new tap.
+ */
+export type SaveOutcome = 'shared' | 'cancelled' | 'downloaded' | 'needs-tap';
+
 /** Hand the file to the OS share sheet where possible, else download it. */
-export async function saveFile(blob: Blob, filename: string): Promise<'shared' | 'downloaded'> {
+export async function saveFile(
+  blob: Blob,
+  filename: string,
+  { deferShare = false }: { deferShare?: boolean } = {},
+): Promise<SaveOutcome> {
   const file = new File([blob], filename, { type: blob.type });
-  if (navigator.canShare?.({ files: [file] }) && /Android|iPhone|iPad/i.test(navigator.userAgent)) {
+  if (mobile() && navigator.canShare?.({ files: [file] })) {
+    // Where the browser says so up front, do not even try: a refused share
+    // can leave iOS unwilling to open the sheet on the next tap either.
+    if (deferShare && navigator.userActivation && !navigator.userActivation.isActive) {
+      return 'needs-tap';
+    }
     try {
       await navigator.share({ files: [file], title: filename });
       return 'shared';
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return 'shared';
+      const name = error instanceof DOMException ? error.name : '';
+      if (name === 'AbortError') return 'cancelled';
+      if (name === 'NotAllowedError' && deferShare) return 'needs-tap';
       // Fall through to a download.
     }
   }

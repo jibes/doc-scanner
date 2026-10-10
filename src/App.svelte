@@ -7,8 +7,9 @@
   import Overlays from './components/Overlays.svelte';
   import PageScreen from './components/PageScreen.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
-  import { pausePrefetch, prefetchExports, resumePrefetch } from './lib/exportCache';
-  import { detector } from './lib/services';
+  import { forgetExport, pausePrefetch, prefetchExports, resumePrefetch } from './lib/exportCache';
+  import { dropRenders } from './lib/renderCache';
+  import { detector, forgetPage } from './lib/services';
   import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
   import { session } from './lib/store/session.svelte';
 
@@ -48,6 +49,20 @@
     resumePrefetch();
     const timer = setTimeout(() => prefetchExports(pages, current), 800);
     return () => clearTimeout(timer);
+  });
+
+  // Free what the workers and the render cache keep for photos that are gone:
+  // pages deleted, retaken or discarded with the document.
+  let photos = new Map<string, Blob>();
+  $effect(() => {
+    const next = new Map(session.pages.map((p) => [p.id, p.source]));
+    for (const [id, source] of photos) {
+      if (next.get(id) === source) continue;
+      forgetPage(id);
+      forgetExport(id);
+      dropRenders(source);
+    }
+    photos = next;
   });
 
   // A page can disappear underneath a screen (deleted, document discarded).
