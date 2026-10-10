@@ -159,3 +159,158 @@ describe('session restore', () => {
     );
   });
 });
+
+/** A database left by the previous version, with photos stored inside the page records. */
+async function version2With(pages: StoredPage[]): Promise<void> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open('doc-scanner', 2);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('pages', { keyPath: 'id' });
+      request.result.createObjectStore('meta');
+      request.result.createObjectStore('history', { keyPath: 'id' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction('pages', 'readwrite');
+    for (const page of pages) tx.objectStore('pages').put(page);
+    tx.oncomplete = () => resolve();
+  });
+  db.close();
+}
+
+/** Everything in one object store, read directly. */
+async function raw(store: string): Promise<unknown[]> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open('doc-scanner');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  const all = await new Promise<unknown[]>((resolve) => {
+    const request = db.transaction(store).objectStore(store).getAll();
+    request.onsuccess = () => resolve(request.result);
+  });
+  db.close();
+  return all;
+}
+
+/** Counts writes to the photo store. */
+function countSourceWrites(): () => number {
+  let writes = 0;
+  const put = IDBObjectStore.prototype.put;
+  vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore['put']>
+  ) {
+    if (this.name === 'sources') writes++;
+    return put.apply(this, args);
+  });
+  return () => writes;
+}
+
+function newPage() {
+  return {
+    source: new Blob(['photo']),
+    width: 10,
+    height: 10,
+    spec: {
+      quad: null,
+      filter: 'color',
+      adjustments: { brightness: 0, contrast: 0, threshold: 0, sharpen: 0 },
+      rotation: 0,
+    } as unknown as PageSpec,
+    detected: null,
+    sharpness: null,
+  };
+}
+
+describe('photos stored apart from pages', () => {
+  it('moves photos out of the page records of an older database', async () => {
+    await version2With([stored('b', 1), stored('a', 0)]);
+    const db = await import('../src/lib/store/db');
+    const pages = await db.loadPages();
+    expect(pages?.map((p) => p.id)).toEqual(['a', 'b']);
+    expect(await pages![0].source.text()).toBe('a');
+    const records = (await raw('pages')) as Record<string, unknown>[];
+    expect(records).toHaveLength(2);
+    for (const record of records) expect(record).not.toHaveProperty('source');
+    expect(await raw('sources')).toHaveLength(2);
+  });
+
+  it('saves edits and reordering without rewriting photos, in batches', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { session } = await import('../src/lib/store/session.svelte');
+    const db = await import('../src/lib/store/db');
+    await session.restore();
+    const writes = countSourceWrites();
+    const first = session.add(newPage());
+    const second = session.add(newPage());
+    await vi.waitFor(async () => expect(await db.loadPages()).toHaveLength(2));
+    expect(writes()).toBe(2);
+
+    for (let i = 1; i <= 21; i++) {
+      session.update(first.id, { rotation: i % 4 } as Partial<PageSpec>);
+    }
+    session.moveTo(second.id, 0);
+    await vi.advanceTimersByTimeAsync(400);
+    await vi.waitFor(async () =>
+      expect((await db.loadPages())?.map((p) => [p.id, p.order, p.spec.rotation])).toEqual([
+        [second.id, 0, 0],
+        [first.id, 1, 1],
+      ]),
+    );
+    expect(writes()).toBe(2);
+  });
+
+  it('deletes photos with their pages', async () => {
+    const { session } = await import('../src/lib/store/session.svelte');
+    await session.restore();
+    const page = session.add(newPage());
+    session.add(newPage());
+    session.remove(page.id);
+    await vi.waitFor(async () => expect(await raw('sources')).toHaveLength(1));
+    session.clear();
+    await vi.waitFor(async () => expect(await raw('sources')).toHaveLength(0));
+  });
+});
+
+describe('undo', () => {
+  it('puts a deleted page back, photo included', async () => {
+    const { session } = await import('../src/lib/store/session.svelte');
+    const db = await import('../src/lib/store/db');
+    await session.restore();
+    const page = session.add(newPage());
+    const undo = session.remove(page.id);
+    undo();
+    expect(session.pages.map((p) => p.id)).toEqual([page.id]);
+    await vi.waitFor(async () =>
+      expect((await db.loadPages())?.map((p) => p.id)).toEqual([page.id]),
+    );
+  });
+
+  it('does not bring a page from a discarded document into the new one', async () => {
+    const { session } = await import('../src/lib/store/session.svelte');
+    await session.restore();
+    const page = session.add(newPage());
+    const undo = session.remove(page.id);
+    session.clear();
+    const fresh = session.add(newPage());
+    undo();
+    expect(session.pages.map((p) => p.id)).toEqual([fresh.id]);
+  });
+
+  it('restores each page’s own filter after applying one to all', async () => {
+    const { session } = await import('../src/lib/store/session.svelte');
+    await session.restore();
+    const a = session.add(newPage());
+    const b = session.add(newPage());
+    session.update(b.id, { filter: 'bw' } as Partial<PageSpec>);
+    const undo = session.applyToAll({ filter: 'document' } as Pick<PageSpec, 'filter'>);
+    expect(session.pages.map((p) => p.spec.filter)).toEqual(['document', 'document']);
+    session.update(a.id, { rotation: 1 } as Partial<PageSpec>);
+    undo();
+    expect(session.pages.map((p) => p.spec.filter)).toEqual(['color', 'bw']);
+    expect(session.get(a.id)?.spec.rotation).toBe(1);
+  });
+});
