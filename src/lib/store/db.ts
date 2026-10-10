@@ -26,6 +26,8 @@ export interface HistoryEntry {
   pdf: Blob | null;
   /** For uploads: how Paperless reported the result. */
   outcome?: 'success' | 'failure' | 'pending';
+  /** For uploads: the Paperless consumption task, to look up a pending result later. */
+  taskId?: string;
 }
 
 const DB_NAME = 'doc-scanner';

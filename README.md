@@ -150,8 +150,15 @@ profile → _API Auth Token_). Optional default tag IDs are attached to every
 upload. Both values stay in this browser's `localStorage` and are only ever sent
 to that server.
 
+**Paperless must be served over https.** The app itself is on https, and
+browsers block requests from an https page to a plain `http://` server (mixed
+content); some also block pages on the internet from reaching addresses on your
+local network. Plain http is accepted only for `localhost` / `127.0.0.1`.
+Put Paperless behind a reverse proxy with a certificate (Caddy, Traefik,
+Tailscale's `tailscale serve`, …).
+
 The browser calls Paperless from another origin, so Paperless must allow it.
-In `docker-compose.env`:
+In `docker-compose.env`, list the app's origin (scheme and host only, no path):
 
 ```bash
 PAPERLESS_CORS_ALLOWED_HOSTS=https://yourname.github.io
@@ -159,6 +166,20 @@ PAPERLESS_CORS_ALLOWED_HOSTS=https://yourname.github.io
 
 Restart Paperless after changing it. Add `http://localhost:5173` too if you run
 the dev server.
+
+The token's user needs permission to add documents and to view tasks; without
+the latter the app cannot tell whether an upload was filed.
+
+### Where the token lives
+
+The token is stored in `localStorage`, which belongs to the site's _origin_
+(scheme + host), not to its path. On `https://<user>.github.io/doc-scanner/`
+that origin is `https://<user>.github.io`, shared by **every** GitHub Pages
+project site of that user: script from any of them can read the token. If you
+publish other Pages sites (or might later), serve this app from its own origin
+instead, e.g. a custom subdomain such as `scan.example.com` (Settings → Pages →
+Custom domain, then build with `VITE_BASE=/`). Use a dedicated Paperless user
+with only the permissions above, so a leaked token can do little.
 
 ## Project layout
 
@@ -233,7 +254,9 @@ once.
 Static files only: no analytics, no telemetry, no server of its own. The only
 network requests are loading the app itself (including the OCR models, from
 the same site) and the uploads to the Paperless URL you configure. Text
-recognition happens on the device.
+recognition happens on the device. A Content Security Policy in `index.html`
+allows only the app's own scripts and network requests to https servers (plus
+`localhost`).
 
 ## Licence
 

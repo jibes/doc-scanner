@@ -1,9 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { pdfFilename, saveFile } from '../lib/export';
   import { haptic } from '../lib/haptics';
-  import { deleteHistory, loadHistory, updateHistory, type HistoryEntry } from '../lib/history';
-  import { isConfigured, uploadDocument, waitForTask } from '../lib/paperless';
+  import {
+    deleteHistory,
+    loadHistory,
+    refreshPendingUploads,
+    updateHistory,
+    type HistoryEntry,
+  } from '../lib/history';
+  import { isConfigured, pollTask, storedOutcome, uploadDocument } from '../lib/paperless';
   import type { AppSettings } from '../lib/settings';
   import { busy, errorMessage, idle, toast } from '../lib/ui.svelte';
   import Icon from './Icon.svelte';
@@ -17,13 +24,25 @@
 
   let entries = $state.raw<HistoryEntry[]>([]);
   let loaded = $state(false);
+  /** Entries being uploaded right now, so a second tap does not send them twice. */
+  const uploading = new SvelteSet<string>();
 
   onMount(() => {
-    void loadHistory().then((list) => {
+    void loadHistory().then(async (list) => {
       entries = list;
       loaded = true;
+      if (!isConfigured(settings.paperless)) return;
+      // Uploads still processing when the app stopped waiting may have finished.
+      const changed = await refreshPendingUploads(settings.paperless, list);
+      if (changed.length === 0) return;
+      const byId = new Map(changed.map((e) => [e.id, e]));
+      entries = entries.map((e) => byId.get(e.id) ?? e);
     });
   });
+
+  function replace(updated: HistoryEntry) {
+    entries = entries.map((e) => (e.id === updated.id ? updated : e));
+  }
 
   const dateFormat = new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
@@ -47,35 +66,48 @@
   }
 
   async function upload(entry: HistoryEntry) {
-    if (!entry.pdf) return;
+    if (!entry.pdf || uploading.has(entry.id)) return;
     if (!isConfigured(settings.paperless)) {
       toast('Add your Paperless URL and API token in the settings first.', 'info');
       return;
     }
+    uploading.add(entry.id);
     try {
       busy('Uploading to Paperless…');
-      const task = await uploadDocument(
+      const taskId = await uploadDocument(
         settings.paperless,
         entry.pdf,
         pdfFilename(entry.title),
         entry.title,
       );
+      // Stored before waiting, so a later visit can look the result up.
+      const sent: HistoryEntry = { ...entry, kind: 'upload', outcome: 'pending', taskId };
+      await updateHistory(sent);
+      replace(sent);
       busy('Paperless is processing it…');
-      const result = await waitForTask(settings.paperless, task);
-      const updated: HistoryEntry = { ...entry, kind: 'upload', outcome: result.outcome };
+      const result = await pollTask(settings.paperless, taskId);
+      const updated: HistoryEntry = { ...sent, outcome: storedOutcome(result.outcome) };
       await updateHistory(updated);
-      entries = entries.map((e) => (e.id === entry.id ? updated : e));
+      replace(updated);
       if (result.outcome === 'failure') {
         haptic('error');
         toast(`Paperless rejected it: ${result.message ?? 'unknown error'}`, 'err');
+      } else if (result.outcome === 'duplicate') {
+        toast('Already in Paperless.', 'info');
       } else {
         haptic('success');
-        toast(result.outcome === 'success' ? 'Filed in Paperless.' : 'Uploaded.', 'good');
+        toast(
+          result.outcome === 'success'
+            ? 'Filed in Paperless.'
+            : 'Uploaded; Paperless is still processing.',
+          'good',
+        );
       }
     } catch (error) {
       haptic('error');
       toast(`Upload failed: ${errorMessage(error)}`, 'err');
     } finally {
+      uploading.delete(entry.id);
       idle();
     }
   }
@@ -137,7 +169,7 @@
             <button
               class="icon ghost"
               onclick={() => void upload(entry)}
-              disabled={!entry.pdf}
+              disabled={!entry.pdf || uploading.has(entry.id)}
               aria-label="Upload {entry.title} to Paperless"
             >
               <Icon name="upload" />
