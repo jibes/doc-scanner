@@ -7,6 +7,7 @@
   import SettingsDialog from './components/SettingsDialog.svelte';
   import Toast from './components/Toast.svelte';
   import { downscaleImage, imageToPngBlob } from './lib/canvas';
+  import { loadCameraPreference } from './lib/cameraPrefs';
   import type { ScanSettings } from './lib/imaging/pipeline';
   import { addPngDpi } from './lib/imaging/png';
   import type { Quad, RGBAImage } from './lib/imaging/types';
@@ -38,6 +39,9 @@
   let paperless = $state<PaperlessConfig>(loadPaperlessConfig());
   let presetId = $state<PresetId | null>('auto');
   let processing = $state(false);
+  let preferredDeviceId = $state<string | null>(loadCameraPreference());
+  // Bumped when the camera preference changes so the preview reopens the stream.
+  let cameraRevision = $state(0);
 
   let processor: ProcessorClient | null = null;
   let settingsDialog = $state<{ open: () => void } | null>(null);
@@ -234,7 +238,7 @@
 
   <main>
     {#if screen === 'camera'}
-      <CameraScreen onCapture={handleCapture} />
+      <CameraScreen onCapture={handleCapture} revision={cameraRevision} {preferredDeviceId} />
     {:else if screen === 'crop' && raw && corners}
       <CropScreen
         image={raw}
@@ -265,6 +269,10 @@
     bind:this={settingsDialog}
     config={paperless}
     onSave={(next) => (paperless = next)}
+    onCameraChange={() => {
+      preferredDeviceId = loadCameraPreference();
+      cameraRevision++;
+    }}
   />
   <Toast />
 </div>

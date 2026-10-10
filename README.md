@@ -17,7 +17,7 @@ own Paperless server.
 
 | Stage     | What happens                                                                                            |
 | --------- | ------------------------------------------------------------------------------------------------------- |
-| Capture   | Rear camera at full sensor resolution, or pick an image from the gallery                                |
+| Capture   | Standard 1x rear lens at full sensor resolution, or pick an image from the gallery                      |
 | Rectify   | Four draggable corners, perspective warp to an axis-aligned page                                        |
 | Flatten   | Divide-by-background illumination correction, per channel, so yellowed or unevenly lit paper goes white |
 | Binarise  | Sauvola local thresholding (also Adaptive, Niblack, Wolf, Otsu)                                         |
@@ -53,7 +53,7 @@ show up locally rather than after a deploy.
 
 ```bash
 npm run check        # svelte-check + tsc for app, node and test configs
-npm test             # vitest, 55 tests over the imaging pipeline
+npm test             # vitest, 65 tests over the imaging pipeline and camera selection
 npm run lint         # eslint
 npm run format       # prettier
 npm run build        # -> dist/
@@ -135,6 +135,33 @@ on a dark background.
 
 Touching any slider clears the preset selection but keeps the values.
 
+## Camera selection
+
+Phones expose every physical lens as its own camera device, and
+`facingMode: 'environment'` is free to pick any of them. On most modern phones
+that means the ultra-wide or a virtual multi-camera, which is the wrong lens for
+a document: it is softer, wider, and distorts more towards the edges.
+
+The scanner does not trust `facingMode` alone. It:
+
+1. Opens a stream, because device labels stay hidden until permission is granted.
+2. Scores every label and picks the standard 1x lens — `Back Camera` on iOS,
+   `camera2 0, facing back` on Android. Ultra-wide, telephoto, macro, depth,
+   LiDAR and front lenses are scored down; a virtual multi-camera loses to a
+   plain single-lens entry.
+3. Reopens the stream on that device when it differs from what `facingMode` chose.
+4. Pins `zoom` to `1` and `focusMode` to `continuous` via `applyConstraints`, so
+   a virtual multi-camera cannot sit on its 0.5x end.
+
+The zoom and focus constraints are optional and best effort: platforms that do
+not implement them ignore the request and the stream still works. The badge in
+the top-left of the preview shows the selected lens and the zoom it was pinned to.
+
+If the automatic choice is wrong, open the gear icon and pick a lens under
+**Camera**. The choice is stored in `localStorage`. Device IDs are salted per
+origin and can rotate between sessions, so a stale value falls back to automatic
+selection rather than failing.
+
 ## Project layout
 
 ```
@@ -154,6 +181,7 @@ src/
       pipeline.ts            stage orchestration
     worker/                  module worker + promise client
     canvas.ts camera.ts      DOM and getUserMedia helpers
+    cameraPrefs.ts           the stored camera choice
     paperless.ts             upload + task polling
     presets.ts settings.ts   defaults, presets, persistence
 tests/                       vitest suites for every imaging module
@@ -186,6 +214,11 @@ request, so only the newest settings are ever computed.
 - **Large solid colour blocks** are not detected as ink by Sauvola, which is
   correct for text but means a big flat stamp relies on the colour mask to
   survive. With colour preservation off it is folded into the ink layer instead.
+- **Lens selection depends on device labels.** Browsers only reveal them once
+  camera permission has been granted, and some Android builds expose generic
+  labels. When nothing scores above zero the app falls back to `facingMode`,
+  which may land on the ultra-wide; the manual picker in settings is the escape
+  hatch.
 - **The API token lives in `localStorage`.** Fine for a personal device; do not
   use this on a shared browser.
 

@@ -1,21 +1,33 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { captureFrame, imageFromBlob, startCamera, stopStream, type Facing } from '../lib/camera';
+  import {
+    captureFrame,
+    imageFromBlob,
+    openCamera,
+    stopStream,
+    type CameraSelection,
+    type Facing,
+  } from '../lib/camera';
   import type { RGBAImage } from '../lib/imaging/types';
   import { showToast } from '../lib/ui.svelte';
 
   interface Props {
     onCapture: (image: RGBAImage) => void;
+    /** Bumped by the settings dialog when the camera preference changes. */
+    revision?: number;
+    preferredDeviceId?: string | null;
   }
 
-  let { onCapture }: Props = $props();
+  let { onCapture, revision = 0, preferredDeviceId = null }: Props = $props();
 
   let video = $state<HTMLVideoElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
   let facing = $state<Facing>('environment');
   let ready = $state(false);
   let error = $state('');
+  let selection = $state<CameraSelection | null>(null);
 
+  // Deliberately not $state: the effect below writes it, and making it
+  // reactive would retrigger the effect on every open.
   let stream: MediaStream | null = null;
 
   async function open() {
@@ -23,8 +35,11 @@
     stream = null;
     ready = false;
     error = '';
+    selection = null;
     try {
-      stream = await startCamera(facing);
+      const result = await openCamera({ facing, preferredDeviceId });
+      stream = result.stream;
+      selection = result.selection;
       if (video) {
         video.srcObject = stream;
         await video.play().catch(() => undefined);
@@ -35,14 +50,17 @@
     }
   }
 
-  onMount(() => {
+  $effect(() => {
+    // Re-open whenever the facing or the saved camera preference changes.
+    void revision;
+    void preferredDeviceId;
+    void facing;
     void open();
     return () => stopStream(stream);
   });
 
-  async function flip() {
+  function flip() {
     facing = facing === 'environment' ? 'user' : 'environment';
-    await open();
   }
 
   function shoot() {
@@ -80,6 +98,11 @@
     <div class="notice"><p>Starting camera…</p></div>
   {:else}
     <div class="hint">Fill the frame with the page</div>
+    {#if selection}
+      <div class="lens">
+        {selection.label}{selection.zoom !== null ? ` · ${selection.zoom}x` : ''}
+      </div>
+    {/if}
   {/if}
 
   <div class="controls">
@@ -93,7 +116,7 @@
 
     <button class="shutter" onclick={shoot} disabled={!ready} aria-label="Capture page"></button>
 
-    <button class="round" onclick={() => void flip()} aria-label="Switch camera">
+    <button class="round" onclick={flip} aria-label="Switch camera">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.36-2.64" />
         <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.36 2.64" />
@@ -142,6 +165,23 @@
     border-radius: 999px;
     font-size: 12px;
     color: rgb(255 255 255 / 85%);
+    pointer-events: none;
+  }
+
+  .lens {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    max-width: 42%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background: rgb(0 0 0 / 60%);
+    backdrop-filter: blur(8px);
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: rgb(255 255 255 / 70%);
     pointer-events: none;
   }
 

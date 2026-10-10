@@ -249,7 +249,8 @@ dialog::backdrop {
   margin-bottom: 6px;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   padding: 10px 12px;
   border-radius: 8px;
@@ -258,6 +259,13 @@ dialog::backdrop {
   color: var(--text);
   font-family: inherit;
   font-size: 14px;
+}
+
+.dialog-body h2.section {
+  margin: 22px 0 6px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  font-size: 15px;
 }
 
 .dialog-actions {
