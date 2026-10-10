@@ -98,6 +98,19 @@ export async function openCamera(deviceId: string | null): Promise<OpenCamera> {
   }
 
   let preferred = deviceId;
+  // Once camera permission has been granted, labels are visible before any
+  // stream is open: pick the standard lens straight away and open the camera
+  // once, instead of opening one and then switching.
+  if (!preferred) {
+    const best = pickCamera(await listCameras());
+    if (best) {
+      try {
+        return finishOpen(await request(best.deviceId));
+      } catch {
+        // Fall through to the slow path.
+      }
+    }
+  }
   let stream: MediaStream;
   try {
     stream = await request(preferred);
@@ -123,6 +136,11 @@ export async function openCamera(deviceId: string | null): Promise<OpenCamera> {
     }
   }
 
+  return finishOpen(stream);
+}
+
+/** Check the stream and pin the standard zoom and continuous focus. */
+async function finishOpen(stream: MediaStream): Promise<OpenCamera> {
   const track = stream.getVideoTracks()[0];
   if (!track) {
     stopStream(stream);

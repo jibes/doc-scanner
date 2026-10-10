@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { processor } from '../lib/services';
+  import { getRender, putRender, renderKey } from '../lib/renderCache';
+  import { processor, renderJob } from '../lib/services';
   import type { Page } from '../lib/store/session.svelte';
+  import { AbortedError } from '../lib/worker/clients';
 
   interface Props {
     page: Page;
@@ -27,41 +29,53 @@
   let failed = $state(false);
   let drawn = $state(false);
 
+  function draw(target: HTMLCanvasElement, bitmap: ImageBitmap) {
+    target.width = bitmap.width;
+    target.height = bitmap.height;
+    target.getContext('2d')?.drawImage(bitmap, 0, 0);
+    drawn = true;
+    failed = false;
+  }
+
   $effect(() => {
     const target = canvas;
     if (!target) return;
-    const job = {
-      pageId: page.id,
-      source: page.source,
-      spec: $state.snapshot(page.spec),
-      longEdge,
-    };
+    const snapshot: Page = { ...page, spec: $state.snapshot(page.spec) };
+    const key = renderKey(snapshot, longEdge, unfiltered);
+    const cached = getRender(key);
+    if (cached) {
+      draw(target, cached);
+      onrendering?.(false);
+      return;
+    }
+
+    const job = renderJob(snapshot, longEdge);
     const raw = unfiltered;
+    const controller = new AbortController();
     let stale = false;
     onrendering?.(true);
     processor()
-      .latest(channel, () => (raw ? processor().rectified(job) : processor().render(job)))
+      .latest(channel, () =>
+        raw
+          ? processor().rectified(job, controller.signal)
+          : processor().render(job, controller.signal),
+      )
       .then((bitmap) => {
         if (!bitmap) return;
-        if (stale) {
-          bitmap.close();
-          return;
-        }
-        target.width = bitmap.width;
-        target.height = bitmap.height;
-        target.getContext('2d')?.drawImage(bitmap, 0, 0);
-        bitmap.close();
-        drawn = true;
-        failed = false;
+        putRender(key, bitmap);
+        if (stale) return;
+        draw(target, bitmap);
         onrendering?.(false);
       })
-      .catch(() => {
-        if (stale) return;
+      .catch((error) => {
+        if (stale || error instanceof AbortedError) return;
         failed = true;
         onrendering?.(false);
       });
     return () => {
       stale = true;
+      // A render nobody will see should not hold up the ones that will.
+      controller.abort();
     };
   });
 </script>

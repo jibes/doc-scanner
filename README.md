@@ -17,17 +17,17 @@ Paperless server, and it keeps working offline after the first visit.
 
 ## How it works
 
-| Stage      | What happens                                                                                                                                                                                                                                               |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Detect     | [DocAligner](https://github.com/DocsaidLab/DocAligner) LC100 (4.8 MB ONNX, heatmap regression) runs on the live preview via ONNX Runtime Web. About 0.99 Jaccard on SmartDoc 2015.                                                                         |
-| Capture    | Full-sensor still via ImageCapture where available (Android Chrome), else the video frame. Auto-capture fires after ~1 s of a steady, confident detection.                                                                                                 |
-| Refine     | The model's corners (from a 256 px thumbnail) are snapped to the real paper edges at 1600 px: gradient search along each side's normal, sub-pixel peak, robust line fit, intersection. Typically 11 px → 1 px of error.                                    |
-| Proportion | Edge lengths in a photo are foreshortened, so pages shot at an angle would rectify too short. The camera's focal length is recovered from the quad's vanishing points (Zhang & He, 2007) to get the true aspect ratio; a tilted A4 comes out at 1 : 1.414. |
-| Rectify    | Perspective warp with Catmull-Rom bicubic sampling (no softening when enlarging) and a box prefilter when shrinking (no aliasing).                                                                                                                         |
-| Flatten    | Paper colour is estimated per block from the brightest pixels, with photos, logos and table strips rejected and filled in from the surrounding paper. Dividing by it removes shadows, gradients and colour casts, with no grey halos around text.          |
-| Filter     | See below.                                                                                                                                                                                                                                                 |
-| Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                      |
-| Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                               |
+| Stage      | What happens                                                                                                                                                                                                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Detect     | [DocAligner](https://github.com/DocsaidLab/DocAligner) LC100 (4.8 MB ONNX, heatmap regression) runs on the live preview via ONNX Runtime Web. About 0.99 Jaccard on SmartDoc 2015.                                                                                                                     |
+| Capture    | Full-sensor still via ImageCapture where available (Android Chrome), else the video frame. Auto-capture fires after ~1 s of a steady, confident detection.                                                                                                                                             |
+| Refine     | The model's corners (from a 256 px thumbnail) are snapped to the real paper edges at 1600 px: gradient search along each side's normal, sub-pixel peak, robust line fit, intersection. Typically 11 px → 1 px of error.                                                                                |
+| Proportion | Edge lengths in a photo are foreshortened, so pages shot at an angle would rectify too short. The camera's focal length is recovered from the quad's vanishing points (Zhang & He, 2007) to get the true aspect ratio; a tilted A4 comes out at 1 : 1.414.                                             |
+| Rectify    | Perspective warp with Catmull-Rom bicubic sampling (no softening when enlarging) and a box prefilter when shrinking (no aliasing).                                                                                                                                                                     |
+| Flatten    | A paper-colour surface from a morphological closing (which wipes out ink but keeps the paper's own shading) follows wrinkles, creases and hand shadows; a coarse per-block estimate guards against large dark content. Dividing by it removes shadows and colour casts with no grey halos around text. |
+| Filter     | See below.                                                                                                                                                                                                                                                                                             |
+| Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                                                                  |
+| Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                                                                           |
 
 ### Filters that do not blur or fatten
 
@@ -37,7 +37,10 @@ thresholds (Sauvola and friends) also cut the camera's edge blur near the paper
 end, so every stroke comes out bolder than it was printed.
 
 Here each pixel's threshold sits halfway between the local ink level and the
-paper. A lens blurs every edge into a ramp from ink to paper, and cutting that
+paper. The ink level is the typical darkness of nearby strokes (the mean of
+the darker pixels' darker half), not the single darkest pixel: phone cameras
+sharpen and compress, which sprinkles near-black specks over soft grey text,
+and a minimum-based threshold would cut such text in half. A lens blurs every edge into a ramp from ink to paper, and cutting that
 ramp at its midpoint lands exactly on the true edge, so regular type stays
 regular. Each pixel then goes through a narrow linear ramp around its
 threshold: clearly ink becomes exactly black, clearly paper exactly white, and
@@ -57,12 +60,13 @@ Around that:
 - **Whole-component cleanup.** Every non-white blob (a glyph plus its
   anti-aliased fringe) is kept or dropped as a unit:
   - dark blobs are kept down to the size of an umlaut dot;
-  - faint blobs are kept only if they are crisp and reasonably dark (grey
-    rules, grey small print). Fold and crease shading is light and soft, so
-    it goes;
+  - faint blobs are kept only if they are crisp, reasonably dark and thin
+    (grey rules, grey small print). Fold, crease and wrinkle shading is light,
+    soft and broad, so it goes;
   - slivers of table or page edge along the border are removed;
   - punch holes are removed when a pair matches ISO 838 geometry (about 6 mm,
-    12 mm from the edge, 80 mm apart).
+    12 mm from the edge, 80 mm apart) and each other, and stands clear of any
+    text line. A word at the margin is never taken for a hole.
 - **Grey stays grey** in the Document filter: a thin grey rule is not turned
   into a heavy black line. B&W is strictly black and white.
 - **Colour layer.** Saturated, non-paper blobs larger than a speck (logos,
@@ -159,9 +163,25 @@ public/models/                  DocAligner model + licence
 tests/                          vitest suites, synthetic photo generator
 ```
 
-Detection and image processing run in two Web Workers, so the camera preview
-and the UI never stall. The session (photos, crops, filters, title) is saved to
+Detection and image processing run in Web Workers, so the camera preview and
+the UI never stall. The session (photos, crops, filters, title) is saved to
 IndexedDB, so a reload or a tab killed by the OS loses nothing.
+
+### Speed
+
+- Previews and thumbnails decode the photo at 1/2 or 1/4 size (natively, via
+  `createImageBitmap`) when that is all the requested size needs.
+- Finished renders are cached on the main thread, so going back to the grid
+  or the camera redraws instantly; leaving a screen cancels its queued
+  renders.
+- While you review the document, a second worker prepares every page at
+  export resolution, so PDF and Upload usually only assemble the file. It
+  pauses while the camera is open.
+- With camera permission granted, the standard lens is opened directly
+  instead of opening one camera and switching.
+
+After a deploy the app keeps running the cached version until it is reloaded
+once.
 
 ## Limitations
 

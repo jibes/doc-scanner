@@ -79,24 +79,35 @@ export function removeSmallComponents(
   return mask;
 }
 
-/** 3x3 binary dilation. */
-export function dilate(mask: Uint8Array, width: number, height: number): Uint8Array {
+/** Binary dilation by a (2r+1)^2 square: separable distance scans, O(n) for any radius. */
+export function dilate(mask: Uint8Array, width: number, height: number, radius = 1): Uint8Array {
+  const r = Math.max(1, Math.floor(radius));
+  const tmp = new Uint8Array(mask.length);
   const out = new Uint8Array(mask.length);
   for (let y = 0; y < height; y++) {
+    const off = y * width;
+    // Distance since the last set pixel, scanning both ways.
+    let last = -Infinity;
     for (let x = 0; x < width; x++) {
-      let on = 0;
-      for (let dy = -1; dy <= 1 && !on; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= height) continue;
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx;
-          if (xx >= 0 && xx < width && mask[yy * width + xx]) {
-            on = 1;
-            break;
-          }
-        }
-      }
-      out[y * width + x] = on;
+      if (mask[off + x]) last = x;
+      if (x - last <= r) tmp[off + x] = 1;
+    }
+    last = Infinity;
+    for (let x = width - 1; x >= 0; x--) {
+      if (mask[off + x]) last = x;
+      if (last - x <= r) tmp[off + x] = 1;
+    }
+  }
+  for (let x = 0; x < width; x++) {
+    let last = -Infinity;
+    for (let y = 0; y < height; y++) {
+      if (tmp[y * width + x]) last = y;
+      if (y - last <= r) out[y * width + x] = 1;
+    }
+    last = Infinity;
+    for (let y = height - 1; y >= 0; y--) {
+      if (tmp[y * width + x]) last = y;
+      if (last - y <= r) out[y * width + x] = 1;
     }
   }
   return out;

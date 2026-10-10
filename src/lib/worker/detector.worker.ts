@@ -5,7 +5,6 @@ import { toLuma, type Quad } from '../imaging/image';
 import { scaleQuad } from '../imaging/quad';
 import { refineQuad } from '../imaging/refine';
 import { MODEL_INPUT } from '../detect/model';
-import { decodeImage } from './decode';
 import type { DetectorRequest, DetectorResponse } from './protocol';
 
 declare const self: {
@@ -74,25 +73,33 @@ async function detectStill(source: Blob): Promise<{
   height: number;
   confidence: number;
 }> {
+  // Decode once; the model and the refinement both draw from this bitmap.
   const full = await createImageBitmap(source, { imageOrientation: 'from-image' });
   const { width, height } = full;
-  let detection: Detection | null;
   try {
-    detection = await infer(full);
+    const detection = await infer(full);
+    if (!detection) return { quad: null, width, height, confidence: 0 };
+
+    const scale = Math.min(1, REFINE_EDGE / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Could not create a 2D canvas context');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(full, 0, 0, w, h);
+    const work = { data: ctx.getImageData(0, 0, w, h).data, width: w, height: h };
+
+    const refined = refineQuad(toLuma(work), scaleQuad(detection.quad, w, h));
+    return {
+      quad: scaleQuad(refined, width / w, height / h),
+      width,
+      height,
+      confidence: detection.confidence,
+    };
   } finally {
     full.close();
   }
-  if (!detection) return { quad: null, width, height, confidence: 0 };
-
-  const work = await decodeImage(source, REFINE_EDGE);
-  const coarse = scaleQuad(detection.quad, work.width, work.height);
-  const refined = refineQuad(toLuma(work), coarse);
-  return {
-    quad: scaleQuad(refined, width / work.width, height / work.height),
-    width,
-    height,
-    confidence: detection.confidence,
-  };
 }
 
 async function handle(request: DetectorRequest): Promise<void> {

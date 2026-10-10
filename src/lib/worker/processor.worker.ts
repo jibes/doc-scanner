@@ -1,10 +1,11 @@
 import { applyFilter, isGrayFilter, type FilterId } from '../imaging/filters';
 import type { RGBAImage } from '../imaging/image';
+import { quadPageSize, scaleQuad } from '../imaging/quad';
 import { pngPredict } from '../pdf/predict';
 import type { PdfImage } from '../pdf/writer';
 import { filterContext, rectifyPage, type PageSpec } from '../pipeline';
-import { decodeImage, rgbaToImageData } from './decode';
-import type { ProcessorRequest, ProcessorResponse } from './protocol';
+import { rgbaToImageData } from './decode';
+import type { ProcessorRequest, ProcessorResponse, RenderJob } from './protocol';
 
 declare const self: {
   onmessage: ((event: MessageEvent<ProcessorRequest>) => void) | null;
@@ -15,10 +16,16 @@ declare const self: {
  * Small caches so that moving a slider only re-runs the filter, not the decode
  * and the warp. Sizes are deliberately tiny: a decoded 12 MP photo is ~48 MB.
  */
-const sources = new Map<string, { blob: Blob; image: RGBAImage }>();
-const rectified = new Map<string, RGBAImage>();
-const MAX_SOURCES = 2;
-const MAX_RECTIFIED = 3;
+interface Decoded {
+  blob: Blob;
+  image: RGBAImage;
+  /** Decoded pixels per source pixel. */
+  scale: number;
+}
+const sources = new Map<string, Decoded>();
+const rectified = new Map<string, { page: RGBAImage; decoded: Decoded }>();
+const MAX_SOURCES = 3;
+const MAX_RECTIFIED = 4;
 
 function touch<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
   map.delete(key);
@@ -26,36 +33,72 @@ function touch<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
   while (map.size > max) map.delete(map.keys().next().value as K);
 }
 
-async function getSource(pageId: string, blob: Blob): Promise<RGBAImage> {
-  const hit = sources.get(pageId);
-  if (hit && hit.blob === blob) {
-    touch(sources, pageId, hit, MAX_SOURCES);
-    return hit.image;
+/**
+ * The photo decoded at the smallest of 1, 1/2 or 1/4 of its size that still
+ * gives the requested page size without enlarging. A 520 px thumbnail of a
+ * 12 MP photo then decodes 3 MP-or-less instead of 12, natively and fast.
+ */
+async function getSource(job: RenderJob, cache = true): Promise<Decoded> {
+  const page = quadPageSize(job.spec.quad, { width: job.sourceWidth, height: job.sourceHeight });
+  const needed = job.longEdge / Math.max(page.width, page.height);
+  const bucket = needed <= 0.25 ? 0.25 : needed <= 0.5 ? 0.5 : 1;
+  const key = `${job.pageId}|${bucket}`;
+  const hit = sources.get(key);
+  if (hit && hit.blob === job.source) {
+    touch(sources, key, hit, MAX_SOURCES);
+    return hit;
   }
-  const image = await decodeImage(blob);
-  touch(sources, pageId, { blob, image }, MAX_SOURCES);
-  return image;
+  const options: ImageBitmapOptions = { imageOrientation: 'from-image' };
+  if (bucket < 1) {
+    options.resizeWidth = Math.max(1, Math.round(job.sourceWidth * bucket));
+    options.resizeHeight = Math.max(1, Math.round(job.sourceHeight * bucket));
+    options.resizeQuality = 'high';
+  }
+  const bitmap = await createImageBitmap(job.source, options);
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Could not create a 2D canvas context');
+    ctx.drawImage(bitmap, 0, 0);
+    const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    // Browsers without resize support decode at full size; measure, don't assume.
+    const decoded: Decoded = {
+      blob: job.source,
+      image: { data, width: bitmap.width, height: bitmap.height },
+      scale: bitmap.width / job.sourceWidth,
+    };
+    if (cache) touch(sources, key, decoded, MAX_SOURCES);
+    return decoded;
+  } finally {
+    bitmap.close();
+  }
+}
+
+/** The page spec in the decoded image's pixel coordinates. */
+function scaledSpec(spec: PageSpec, scale: number): PageSpec {
+  return scale === 1 ? spec : { ...spec, quad: scaleQuad(spec.quad, scale) };
 }
 
 async function getRectified(
-  pageId: string,
-  blob: Blob,
-  spec: PageSpec,
-  longEdge: number,
-  cache = true,
-): Promise<RGBAImage> {
-  const key = `${pageId}|${spec.quad
+  job: RenderJob,
+  cache: boolean,
+): Promise<{ page: RGBAImage; decoded: Decoded }> {
+  const { spec } = job;
+  const key = `${job.pageId}|${spec.quad
     .flat()
     .map((v) => v.toFixed(2))
-    .join(',')}|${spec.rotation}|${longEdge}`;
+    .join(',')}|${spec.rotation}|${job.longEdge}`;
   const hit = rectified.get(key);
-  if (hit) {
+  if (hit && hit.decoded.blob === job.source) {
     touch(rectified, key, hit, MAX_RECTIFIED);
     return hit;
   }
-  const page = rectifyPage(await getSource(pageId, blob), spec, longEdge);
-  if (cache) touch(rectified, key, page, MAX_RECTIFIED);
-  return page;
+  // A full-size decode for a one-off export render is not worth keeping.
+  const decoded = await getSource(job, cache);
+  const page = rectifyPage(decoded.image, scaledSpec(spec, decoded.scale), job.longEdge);
+  const entry = { page, decoded };
+  if (cache) touch(rectified, key, entry, MAX_RECTIFIED);
+  return entry;
 }
 
 async function toBitmap(image: RGBAImage): Promise<ImageBitmap> {
@@ -78,9 +121,9 @@ function isNeutral(image: RGBAImage): boolean {
 }
 
 /**
- * Lossless (PNG-predicted Flate) for the clean filters: their output is flat
- * white with crisp ink, which JPEG would both bloat and ring around. JPEG only
- * for the photographic ones.
+ * Lossless (Flate, PNG-predicted where that helps) for the clean filters:
+ * their output is flat white with crisp ink, which JPEG would both bloat and
+ * ring around. JPEG only for the photographic ones.
  */
 async function encodeForPdf(
   image: RGBAImage,
@@ -106,21 +149,27 @@ async function encodeForPdf(
       samples[i++] = image.data[p + 2];
     }
   }
-  // Clean output is mostly flat runs, which plain deflate already handles
-  // best; PNG prediction only pays off where there are smooth tones. Measure
-  // rather than guess.
-  const [plain, predicted] = await Promise.all([
-    deflate(samples),
-    deflate(pngPredict(samples, image.width, image.height, channels)),
-  ]);
+  // Document and B&W output is flat runs of white and black, which plain
+  // deflate already handles best. PNG prediction only pays off on smooth
+  // tones, so it is only tried, and kept if smaller, for the grey filter.
+  const plain = await deflate(samples);
+  if (filter !== 'gray') {
+    return { kind: 'flate', bytes: plain, components: channels, predictor: false };
+  }
+  const predicted = await deflate(pngPredict(samples, image.width, image.height, channels));
   return predicted.length < plain.length
     ? { kind: 'flate', bytes: predicted, components: channels, predictor: true }
     : { kind: 'flate', bytes: plain, components: channels, predictor: false };
 }
 
+const cancelled = new Set<number>();
+
 async function handle(request: ProcessorRequest): Promise<void> {
+  if (request.type === 'cancel') return;
   if (request.type === 'forget') {
-    sources.delete(request.pageId);
+    for (const key of [...sources.keys()]) {
+      if (key.startsWith(`${request.pageId}|`)) sources.delete(key);
+    }
     for (const key of [...rectified.keys()]) {
       if (key.startsWith(`${request.pageId}|`)) rectified.delete(key);
     }
@@ -128,26 +177,24 @@ async function handle(request: ProcessorRequest): Promise<void> {
   }
 
   const { id } = request;
+  if (cancelled.delete(id)) {
+    self.postMessage({ type: 'error', id, message: 'cancelled' });
+    return;
+  }
   try {
     // Export renders are one-off and large; caching them would only pin memory.
-    const page = await getRectified(
-      request.pageId,
-      request.source,
-      request.spec,
-      request.longEdge,
-      request.type !== 'encode',
-    );
+    const { page, decoded } = await getRectified(request, request.type !== 'encode');
     if (request.type === 'rectified') {
       const bitmap = await toBitmap(page);
       self.postMessage({ type: 'bitmap', id, bitmap }, [bitmap]);
       return;
     }
-    const { spec, longEdge } = request;
+    const spec = scaledSpec(request.spec, decoded.scale);
     const result = applyFilter(
       page,
       spec.filter,
       spec.adjustments,
-      filterContext(spec.quad, longEdge, await getSource(request.pageId, request.source)),
+      filterContext(spec.quad, request.longEdge, decoded.image),
     );
     if (request.type === 'render') {
       const bitmap = await toBitmap(result);
@@ -167,8 +214,14 @@ async function handle(request: ProcessorRequest): Promise<void> {
   }
 }
 
-// Serialise: one job at a time, in order.
+// Serialise: one job at a time, in order. Cancellations skip the queue so a
+// job that is no longer wanted never starts.
 let queue: Promise<void> = Promise.resolve();
 self.onmessage = (event) => {
-  queue = queue.then(() => handle(event.data));
+  const request = event.data;
+  if (request.type === 'cancel') {
+    cancelled.add(request.id);
+    return;
+  }
+  queue = queue.then(() => handle(request));
 };

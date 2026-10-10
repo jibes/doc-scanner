@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { estimatePaper, flattenPaper } from '../src/lib/imaging/background';
-import { boxMean, gaussian } from '../src/lib/imaging/box';
-import { labelComponents, removeSmallComponents } from '../src/lib/imaging/components';
+import { boxMean, darkClassLevel, gaussian, maxFilter, minFilter } from '../src/lib/imaging/box';
+import { dilate, labelComponents, removeSmallComponents } from '../src/lib/imaging/components';
 import { applyFilter } from '../src/lib/imaging/filters';
 import { createFloat, rotateRGBA, type Quad } from '../src/lib/imaging/image';
 import { refineQuad } from '../src/lib/imaging/refine';
@@ -324,9 +324,10 @@ describe('text fidelity on a camera-blurred page', () => {
     // A fold: a faint, soft horizontal shadow band across part of the page.
     softRect(img, 400, 1000, 900, 1004, 175, 6);
     // Punch-hole shadows: two crescent-ish dark marks 12 mm from the left
-    // edge, 80 mm apart (on A4 at this size: x ~ 71 px, gap ~ 472 px).
-    softRect(img, 58, 698, 82, 714, 60, 2);
-    softRect(img, 58, 1170, 82, 1186, 60, 2);
+    // edge, about 6 mm across, 80 mm apart (on A4 at this size: x ~ 71 px,
+    // ~34 px across, gap ~ 472 px).
+    softRect(img, 54, 690, 88, 722, 60, 2);
+    softRect(img, 54, 1162, 88, 1194, 60, 2);
     return img;
   }
 
@@ -361,8 +362,8 @@ describe('text fidelity on a camera-blurred page', () => {
     expect(px(out, 70, 1178)[0]).toBe(255);
     const single = page();
     // Paint over the second hole: now there is only one, so it is not a hole.
-    for (let y = 1165; y < 1192; y++)
-      for (let x = 50; x < 95; x++) {
+    for (let y = 1155; y < 1200; y++)
+      for (let x = 45; x < 100; x++) {
         const p = (y * W + x) * 4;
         single.data[p] = single.data[p + 1] = single.data[p + 2] = 235;
       }
@@ -392,5 +393,78 @@ describe('low-resolution previews keep every letter', () => {
     softRect(img, 500, 500, 502, 502, 25, 1);
     const out = applyFilter(img, 'document');
     expect(px(out, 500, 500)[0]).toBeLessThan(120);
+  });
+});
+
+describe('punch holes never take text with them', () => {
+  it('keeps word-shaped blobs at the margin even at hole spacing', () => {
+    // Words like "Bei" at a narrow left margin, 80 mm apart on A4: hole-ish
+    // position and spacing, but only as tall as a line of text.
+    const W = 2480;
+    const H = 3508;
+    const img = fill(W, H, [235, 235, 235]);
+    softRect(img, 110, 1200, 170, 1230, 20, 2);
+    softRect(img, 110, 2145, 175, 2175, 20, 2);
+    const out = applyFilter(img, 'document');
+    expect(px(out, 140, 1215)[0]).toBeLessThan(60);
+    expect(px(out, 142, 2160)[0]).toBeLessThan(60);
+  });
+});
+
+describe('morphology and level helpers', () => {
+  function random(w: number, h: number, seed = 1) {
+    const img = createFloat(w, h);
+    let s = seed;
+    for (let i = 0; i < img.data.length; i++) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      img.data[i] = s / 2 ** 32;
+    }
+    return img;
+  }
+
+  it('minFilter and maxFilter match a brute-force window', () => {
+    const img = random(37, 23);
+    const r = 3;
+    const lo = minFilter(img, r);
+    const hi = maxFilter(img, r);
+    for (let y = 0; y < 23; y++) {
+      for (let x = 0; x < 37; x++) {
+        let mn = 1;
+        let mx = 0;
+        for (let yy = Math.max(0, y - r); yy <= Math.min(22, y + r); yy++) {
+          for (let xx = Math.max(0, x - r); xx <= Math.min(36, x + r); xx++) {
+            mn = Math.min(mn, img.data[yy * 37 + xx]);
+            mx = Math.max(mx, img.data[yy * 37 + xx]);
+          }
+        }
+        expect(lo.data[y * 37 + x]).toBe(mn);
+        expect(hi.data[y * 37 + x]).toBe(mx);
+      }
+    }
+  });
+
+  it('dilate with radius 2 equals two 3x3 dilations', () => {
+    const w = 30;
+    const h = 20;
+    const mask = new Uint8Array(w * h);
+    for (const i of [0, 47, 312, 599, 250]) mask[i] = 1;
+    expect(dilate(mask, w, h, 2)).toEqual(dilate(dilate(mask, w, h), w, h));
+  });
+
+  it('darkClassLevel tracks stroke darkness, not stray black specks', () => {
+    // Grey strokes (0.5) on paper (1.0), with 1% of pixels pure black.
+    const w = 120;
+    const h = 60;
+    const img = createFloat(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) img.data[y * w + x] = x % 12 < 4 ? 0.5 : 1;
+    }
+    for (let i = 0; i < img.data.length; i += 97) img.data[i] = 0;
+    const level = darkClassLevel(img, 10);
+    const centre = level.data[30 * w + 60];
+    expect(centre).toBeGreaterThan(0.4);
+    expect(centre).toBeLessThan(0.55);
+    // The plain minimum would have said black.
+    expect(minFilter(img, 10).data[30 * w + 60]).toBe(0);
   });
 });

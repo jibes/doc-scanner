@@ -5,33 +5,25 @@ import type { PageSpec } from '../pipeline';
 
 /* ------------------------------------------------------------ processor ---- */
 
+/** A page to render: its photo, the photo's pixel size, and what to do with it. */
+export interface RenderJob {
+  pageId: string;
+  source: Blob;
+  /** Full pixel size of `source`, so it can be decoded at a reduced size. */
+  sourceWidth: number;
+  sourceHeight: number;
+  spec: PageSpec;
+  /** Long edge of the rendered page, in pixels. */
+  longEdge: number;
+}
+
 export type ProcessorRequest =
-  | {
-      type: 'render';
-      id: number;
-      pageId: string;
-      source: Blob;
-      spec: PageSpec;
-      longEdge: number;
-    }
-  | {
-      type: 'encode';
-      id: number;
-      pageId: string;
-      source: Blob;
-      spec: PageSpec;
-      longEdge: number;
-      jpegQuality: number;
-    }
-  | {
-      /** The rectified page before any filter, for "hold to compare". */
-      type: 'rectified';
-      id: number;
-      pageId: string;
-      source: Blob;
-      spec: PageSpec;
-      longEdge: number;
-    }
+  | ({ type: 'render'; id: number } & RenderJob)
+  | ({ type: 'encode'; id: number; jpegQuality: number } & RenderJob)
+  /** The rectified page before any filter, for "hold to compare". */
+  | ({ type: 'rectified'; id: number } & RenderJob)
+  /** Drop a queued job; handled immediately, not in queue order. */
+  | { type: 'cancel'; id: number }
   | { type: 'forget'; pageId: string };
 
 export type ProcessorResponse =
