@@ -272,3 +272,100 @@ describe('refineQuad', () => {
     expect(refineQuad(flat, quad)).toEqual(quad);
   });
 });
+
+/**
+ * Paint a rectangle with camera-like soft edges: coverage ramps linearly over
+ * `blur` pixels across each edge, centred on the true edge.
+ */
+function softRect(
+  img: ReturnType<typeof fill>,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  level: number,
+  blur = 3,
+) {
+  const pad = Math.ceil(blur);
+  for (
+    let y = Math.max(0, Math.floor(y0) - pad);
+    y < Math.min(img.height, Math.ceil(y1) + pad);
+    y++
+  ) {
+    for (
+      let x = Math.max(0, Math.floor(x0) - pad);
+      x < Math.min(img.width, Math.ceil(x1) + pad);
+      x++
+    ) {
+      const cx = Math.min(1, Math.max(0, Math.min(x + 0.5 - x0, x1 - x - 0.5) / blur + 0.5));
+      const cy = Math.min(1, Math.max(0, Math.min(y + 0.5 - y0, y1 - y - 0.5) / blur + 0.5));
+      const coverage = cx * cy;
+      const p = (y * img.width + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        img.data[p + c] = Math.min(img.data[p + c], 235 - (235 - level) * coverage);
+      }
+    }
+  }
+}
+
+describe('text fidelity on a camera-blurred page', () => {
+  // A4-proportioned page, so the size-relative rules see a realistic page.
+  const W = 1240;
+  const H = 1754;
+
+  function page() {
+    const img = fill(W, H, [235, 235, 235]);
+    // Body text stand-ins: 4 px strokes, dark, soft edges.
+    for (let i = 0; i < 6; i++) softRect(img, 300 + i * 40, 400, 304 + i * 40, 440, 20);
+    // An umlaut-sized dot: 5x5.
+    softRect(img, 700, 400, 705, 405, 20, 1.5);
+    // A thin grey table rule, crisp.
+    softRect(img, 150, 700, 1100, 702, 120, 1.2);
+    // A fold: a faint, soft horizontal shadow band across part of the page.
+    softRect(img, 400, 1000, 900, 1004, 175, 6);
+    // Punch-hole shadows: two crescent-ish dark marks 12 mm from the left
+    // edge, 80 mm apart (on A4 at this size: x ~ 71 px, gap ~ 472 px).
+    softRect(img, 58, 700, 86, 712, 60, 2);
+    softRect(img, 58, 1172, 86, 1184, 60, 2);
+    return img;
+  }
+
+  const out = applyFilter(page(), 'document');
+
+  it('keeps the true stroke width instead of fattening it', () => {
+    // Count ink pixels across one 4 px stroke.
+    let ink = 0;
+    for (let x = 290; x < 316; x++) ink += 1 - px(out, x, 420)[0] / 255;
+    expect(ink).toBeGreaterThan(3);
+    expect(ink).toBeLessThan(5);
+  });
+
+  it('keeps small dots such as umlauts', () => {
+    expect(px(out, 702, 402)[0]).toBeLessThan(60);
+  });
+
+  it('keeps a thin grey rule along its whole length, and grey', () => {
+    for (let x = 170; x < 1080; x += 50) {
+      const v = Math.min(px(out, x, 700)[0], px(out, x, 701)[0]);
+      expect(v).toBeLessThan(200);
+    }
+    expect(px(out, 600, 700)[0]).toBeGreaterThan(20);
+  });
+
+  it('removes fold shading', () => {
+    for (let x = 420; x < 880; x += 40) expect(px(out, x, 1002)[0]).toBe(255);
+  });
+
+  it('removes a pair of punch holes but not a single mark', () => {
+    expect(px(out, 72, 706)[0]).toBe(255);
+    expect(px(out, 72, 1178)[0]).toBe(255);
+    const single = page();
+    // Paint over the second hole: now there is only one, so it is not a hole.
+    for (let y = 1165; y < 1192; y++)
+      for (let x = 50; x < 95; x++) {
+        const p = (y * W + x) * 4;
+        single.data[p] = single.data[p + 1] = single.data[p + 2] = 235;
+      }
+    expect(px(applyFilter(single, 'document'), 72, 706)[0]).toBeLessThan(100);
+  });
+});

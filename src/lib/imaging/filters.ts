@@ -1,5 +1,6 @@
 import { flattenPaper } from './background';
-import { gaussian, localStats } from './box';
+import { boxMean, gaussian, minFilter } from './box';
+import { measureBlobs, keepBlobs } from './cleanup';
 import { dilate, labelComponents, removeSmallComponents } from './components';
 import { createFloat, createRGBA, toLuma, type FloatImage, type RGBAImage } from './image';
 
@@ -18,7 +19,7 @@ export interface Adjustments {
   brightness: number;
   /** -1..1. Moves the black point. */
   contrast: number;
-  /** -1..1. For document/bw: lower keeps fainter strokes, higher drops more. */
+  /** -1..1. For document/bw: text weight. Positive is bolder, negative thinner; 0 keeps the true stroke width. */
   threshold: number;
   /**
    * 0..1. Unsharp-mask amount for colour and grey content. For black text it
@@ -47,8 +48,17 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
  * Lengths below are fractions of the page's long edge, so a 1400 px preview
  * and a 3500 px export apply the same filter to the same part of the page.
  */
-const SAUVOLA_RADIUS = 0.012;
-const SPECK_EDGE = 0.0011;
+/** Window for the local ink level: about one glyph. */
+const INK_WINDOW = 0.004;
+/** Window for "darker than its surroundings": a few lines of text. */
+const CONTEXT_WINDOW = 0.012;
+/** Below this ink-to-paper contrast nothing is print. */
+const MIN_INK_CONTRAST = 0.2;
+/** Faint blobs with an area below this length squared are noise. */
+const FAINT_EDGE = 0.0025;
+/** Faint thin blobs shorter than this are fold or crease shadows. */
+const DASH_LENGTH = 0.06;
+const SPECK_EDGE = 0.0006;
 const COLOR_BLOB_EDGE = 0.004;
 /** Width of the border band in which edge slivers are removed. */
 const BORDER_BAND = 0.012;
@@ -153,29 +163,42 @@ function enhanceColor(flat: RGBAImage, adj: Adjustments, gray: boolean): RGBAIma
 /**
  * Black text on white paper, as a coverage map (0 = ink, 1 = paper).
  *
- * The threshold surface is Sauvola's, computed on the flattened page. Instead
- * of snapping to 0/1 and blurring the result back into anti-aliasing (which is
- * what makes cheap scanners look soft), each pixel is mapped through a narrow
- * linear ramp centred on its threshold. Pixels clearly on one side become pure
- * black or pure white; the one or two pixels that straddle a stroke edge keep
- * a proportional grey, so edges stay exactly as sharp as the optics allowed.
+ * Stroke width is preserved by putting each pixel's threshold halfway between
+ * the local ink level and the paper. A camera blurs every edge into a ramp
+ * from ink to paper; cutting that ramp at its midpoint lands exactly on the
+ * true edge, whereas Sauvola-style thresholds sit near the paper end and make
+ * every stroke as much bolder as the lens was soft. Paper is 1.0 here (the
+ * page is flattened), and the local ink level is the darkest value within a
+ * glyph-sized window.
+ *
+ * Instead of snapping to 0/1 and blurring the result back into anti-aliasing
+ * (what makes cheap scanners look soft), each pixel goes through a narrow
+ * linear ramp centred on its threshold: clearly-ink is pure black,
+ * clearly-paper pure white, and only pixels straddling an edge keep a grey.
  */
-function inkCoverage(flat: RGBAImage, adj: Adjustments, ctx: FilterContext): FloatImage {
-  // A whisker of smoothing at the scale of the camera's noise. On its own it
-  // would soften; ahead of the threshold ramp it only straightens the wobble
-  // that JPEG blocks and sensor noise put into glyph outlines, because the
-  // ramp then re-sharpens every edge.
+function inkCoverage(
+  flat: RGBAImage,
+  adj: Adjustments,
+  ctx: FilterContext,
+  preserveGray: boolean,
+): FloatImage {
+  // A whisker of smoothing at the scale of the camera's noise straightens the
+  // wobble that JPEG blocks and sensor noise put into glyph outlines; the
+  // ramp below re-sharpens every edge, so nothing ends up soft.
   const luma = gaussian(toLuma(flat), 0.45 * Math.max(1, ctx.sourceScale) * (1.2 - adj.sharpen));
   const { width, height } = luma;
-  const radius = Math.max(4, Math.round(longEdge(luma) * SAUVOLA_RADIUS));
-  const { mean, std } = localStats(luma, radius);
-  const k = 0.2 + adj.threshold * 0.12;
-  const R = 0.5;
-  // Anything this close to paper is paper, whatever the local statistics say.
-  const paperCut = Math.min(0.97, 0.88 - adj.brightness * 0.05);
-  const inkCut = 0.22 + adj.contrast * 0.08;
-  const flatCut = 0.55 - adj.threshold * 0.08;
-  const darkCut = flatCut - 0.05;
+  const L = longEdge(luma);
+  const inkRadius = Math.max(2, Math.round(L * INK_WINDOW));
+  const inkLevel = boxMean(minFilter(luma, inkRadius), inkRadius);
+  const mean = boxMean(luma, Math.max(4, Math.round(L * CONTEXT_WINDOW)));
+
+  // Where on the ink-to-paper ramp to cut: 0.5 is the true edge. "Text weight"
+  // moves it towards paper (bolder) or towards ink (thinner).
+  const cut = 0.5 + adj.threshold * 0.12;
+  const paperCut = Math.min(0.97, 0.9 - adj.brightness * 0.05);
+  // Anything this dark is ink whatever its surroundings, so solid shapes are
+  // filled rather than outlined.
+  const darkCut = 0.45 + adj.contrast * 0.08;
 
   const out = createFloat(width, height);
   for (let i = 0; i < out.data.length; i++) {
@@ -184,47 +207,52 @@ function inkCoverage(flat: RGBAImage, adj: Adjustments, ctx: FilterContext): Flo
       out.data[i] = 1;
       continue;
     }
-    if (v <= inkCut) {
-      out.data[i] = 0;
-      continue;
-    }
-    const m = mean.data[i];
-    const s = std.data[i];
-    // Sauvola needs local contrast to work with. Inside a large flat region
-    // (a solid logo, a filled box, a tinted table cell) there is none, and its
-    // threshold slides to just under the local mean, hollowing the fill out.
-    // There, decide on absolute darkness instead: dark fills go solid black,
-    // light tints go white. Text always has contrast, so it stays adaptive.
-    const adaptive = m * (1 + k * (s / R - 1));
-    const w = smoothstep(0.015, 0.05, s);
-    // And whatever the statistics say, anything this dark is ink: near the
-    // edge of a solid shape Sauvola's window straddles the edge and would
-    // otherwise leave a white ring inside it.
-    const t = Math.min(paperCut, Math.max(darkCut, w * adaptive + (1 - w) * flatCut));
-    // Ramp half-width tracks local contrast: crisp on bold print, a little
-    // more forgiving on faint pencil.
-    const half = Math.min(0.1, Math.max(0.035, s * 0.35));
+    const ink = inkLevel.data[i];
+    const contrast = 1 - ink;
+    // Too little contrast to be print (fold shadows, tints, paper texture):
+    // only genuinely dark pixels count.
+    let t = contrast < MIN_INK_CONTRAST ? darkCut : ink + contrast * cut;
+    // Ink is darker than its surroundings. A light tint fills its own
+    // neighbourhood, so it fails this and stays white instead of turning
+    // into a black block.
+    t = Math.min(t, mean.data[i] - 0.015);
+    t = Math.min(paperCut, Math.max(darkCut, t));
+    const half = Math.min(0.05, Math.max(0.015, contrast * 0.06));
     let c = (v - t) / (2 * half) + 0.5;
-    // Solid dark areas go fully black over a short ramp of their own, rather
-    // than sitting in the grey middle of a wide edge ramp.
+    // Solid dark areas go fully black over a short ramp of their own.
     if (v < darkCut) c = Math.min(c, (v - (darkCut - 0.06)) / 0.06);
     out.data[i] = c < 0 ? 0 : c > 1 ? 1 : c;
   }
 
-  // Hysteresis cleanup. Every non-white blob (a glyph plus its anti-aliased
-  // fringe) survives only if it holds enough real ink. That removes faint
-  // grey noise and dots far smaller than a full stop, while every pixel of a
-  // genuine glyph, fringe included, is kept.
-  const speck = Math.max(2, Math.round((longEdge(luma) * SPECK_EDGE) ** 2));
+  // Component cleanup: every non-white blob (a glyph plus its anti-aliased
+  // fringe) is kept or dropped as a whole, so kept glyphs keep every edge
+  // pixel and dropped noise leaves nothing behind. See cleanup.ts.
   const touched = new Uint8Array(out.data.length);
   for (let i = 0; i < touched.length; i++) touched[i] = out.data[i] < 0.97 ? 1 : 0;
-  const { labels, areas } = labelComponents(touched, width, height);
-  const core = new Int32Array(areas.length);
-  for (let i = 0; i < labels.length; i++) if (labels[i] && out.data[i] < 0.5) core[labels[i]]++;
-  const keep = new Uint8Array(touched.length);
-  for (let i = 0; i < keep.length; i++) keep[i] = labels[i] && core[labels[i]] >= speck ? 1 : 0;
-  clearBorderSlivers(keep, width, height);
-  for (let i = 0; i < keep.length; i++) if (touched[i] && !keep[i]) out.data[i] = 1;
+  const band = Math.max(3, Math.round(L * BORDER_BAND));
+  const { labels, blobs } = measureBlobs(touched, luma, band);
+  const keep = keepBlobs(blobs, width, height, {
+    speck: Math.max(3, Math.round((L * SPECK_EDGE) ** 2)),
+    faintMinArea: Math.max(12, Math.round((L * FAINT_EDGE) ** 2)),
+    dashMaxLength: L * DASH_LENGTH,
+    band,
+    // Enlarging the photo softens every edge by the same factor.
+    faintMinGradient: 0.15 / Math.max(1, ctx.sourceScale),
+  });
+  for (let i = 0; i < out.data.length; i++) {
+    const l = labels[i];
+    if (!l) continue;
+    if (!keep[l]) {
+      out.data[i] = 1;
+      continue;
+    }
+    if (preserveGray) {
+      // Grey print (light rules, grey small print) stays grey rather than
+      // being forced to black; anything printed dark is pure black.
+      const tone = Math.min(0.6, Math.max(0, (blobs[l]!.minLuma - 0.3) / 0.6));
+      out.data[i] = out.data[i] + (1 - out.data[i]) * tone;
+    }
+  }
 
   return out;
 }
@@ -298,7 +326,7 @@ export function applyFilter(
   if (filter === 'color') return enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, false);
   if (filter === 'gray') return enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, true);
 
-  const ink = inkCoverage(flat, adj, ctx);
+  const ink = inkCoverage(flat, adj, ctx, filter === 'document');
   const out = createRGBA(src.width, src.height);
   if (filter === 'bw') {
     for (let i = 0, p = 0; i < ink.data.length; i++, p += 4) {

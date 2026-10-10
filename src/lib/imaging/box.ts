@@ -106,3 +106,52 @@ export function gaussian(src: FloatImage, sigma: number): FloatImage {
   }
   return out;
 }
+
+/**
+ * Minimum over a (2r+1)^2 window (grey-level erosion), separable, with a
+ * monotonic queue per line so the cost does not depend on the radius.
+ */
+export function minFilter(src: FloatImage, radius: number): FloatImage {
+  const r = Math.max(0, Math.floor(radius));
+  const { width: w, height: h } = src;
+  if (r === 0) return src;
+  const tmp = new Float32Array(w * h);
+  const out = createFloat(w, h);
+  const queue = new Int32Array(Math.max(w, h));
+
+  const pass = (read: (i: number) => number, write: (i: number, v: number) => void, n: number) => {
+    let head = 0;
+    let tail = 0;
+    // Prime the window [0, r).
+    for (let i = 0; i < Math.min(r, n); i++) {
+      while (tail > head && read(queue[tail - 1]) >= read(i)) tail--;
+      queue[tail++] = i;
+    }
+    for (let i = 0; i < n; i++) {
+      const enter = i + r;
+      if (enter < n) {
+        while (tail > head && read(queue[tail - 1]) >= read(enter)) tail--;
+        queue[tail++] = enter;
+      }
+      while (queue[head] < i - r) head++;
+      write(i, read(queue[head]));
+    }
+  };
+
+  for (let y = 0; y < h; y++) {
+    const off = y * w;
+    pass(
+      (i) => src.data[off + i],
+      (i, v) => (tmp[off + i] = v),
+      w,
+    );
+  }
+  for (let x = 0; x < w; x++) {
+    pass(
+      (i) => tmp[i * w + x],
+      (i, v) => (out.data[i * w + x] = v),
+      h,
+    );
+  }
+  return out;
+}

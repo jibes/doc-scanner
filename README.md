@@ -29,29 +29,42 @@ Paperless server, and it keeps working offline after the first visit.
 | Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                      |
 | Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                               |
 
-### Filters that do not blur
+### Filters that do not blur or fatten
 
-Cheap scanners threshold the page to pure black and white, then blur the mask to
-hide the jaggies, which is why their text looks soft. Here each pixel instead
-goes through a narrow linear ramp centred on its own local (Sauvola) threshold.
-Pixels clearly on one side become exactly black or exactly white; only the one
-or two pixels that straddle a stroke edge keep a proportional grey. Edges stay
-as sharp as the lens allowed, and text has no hard 1-bit staircase either.
+Cheap scanners threshold the page to pure black and white, then blur the mask
+to hide the jaggies, which is why their text looks soft. Most adaptive
+thresholds (Sauvola and friends) also cut the camera's edge blur near the paper
+end, so every stroke comes out bolder than it was printed.
 
-Around that ramp:
+Here each pixel's threshold sits halfway between the local ink level and the
+paper. A lens blurs every edge into a ramp from ink to paper, and cutting that
+ramp at its midpoint lands exactly on the true edge, so regular type stays
+regular. Each pixel then goes through a narrow linear ramp around its
+threshold: clearly ink becomes exactly black, clearly paper exactly white, and
+only the one or two pixels that straddle an edge keep a proportional grey.
 
-- **Contour smoothing before the threshold.** Sub-pixel Gaussian, scaled to the
-  camera's pixel size, removes the wobble that sensor noise and JPEG blocks put
-  into glyph outlines. The ramp re-sharpens every edge afterwards.
+Around that:
+
+- **Contour smoothing before the threshold.** A sub-pixel Gaussian, scaled to
+  the camera's pixel size, removes the wobble that sensor noise and JPEG
+  blocks put into glyph outlines. The ramp re-sharpens every edge.
 - **Upsampled thresholding.** Pages are rendered at about 300 dpi even when
   that means enlarging the photo (bicubic, at most 2×), which gives smoother
   letter shapes than thresholding at camera resolution.
-- **Flat-region handling.** Sauvola hollows out large solid shapes. Where local
-  contrast is low, an absolute threshold takes over, so filled logos stay
-  filled and tinted boxes go white.
-- **Hysteresis cleanup.** Every non-white blob (a glyph plus its anti-aliased
-  fringe) survives only if it contains enough real ink. That removes specks
-  and faint noise, and grey slivers of table along the crop border.
+- **Solid shapes stay solid, tints go white.** Anything clearly dark is ink,
+  so filled logos are not hollowed out; a light tint fills its own
+  surroundings, so it does not turn into a black block.
+- **Whole-component cleanup.** Every non-white blob (a glyph plus its
+  anti-aliased fringe) is kept or dropped as a unit:
+  - dark blobs are kept down to the size of an umlaut dot;
+  - faint blobs are kept only if they are crisp and reasonably dark (grey
+    rules, grey small print). Fold and crease shading is light and soft, so
+    it goes;
+  - slivers of table or page edge along the border are removed;
+  - punch holes are removed when a pair matches ISO 838 geometry (about 6 mm,
+    12 mm from the edge, 80 mm apart).
+- **Grey stays grey** in the Document filter: a thin grey rule is not turned
+  into a heavy black line. B&W is strictly black and white.
 - **Colour layer.** Saturated, non-paper blobs larger than a speck (logos,
   stamps, signatures, highlighter) are composited back in colour; chromatic
   fringes on black text are too small to qualify.
@@ -64,7 +77,8 @@ Around that ramp:
 | Colour   | Flattened colour with clean white paper and a levels curve |
 | Original | Perspective correction only                                |
 
-Per page you can adjust whiteness, ink depth, text weight and sharpening, rotate,
+Per page you can adjust whiteness, ink depth, text weight (0 keeps the printed
+weight) and sharpening, rotate,
 re-crop with a magnifier loupe, retake, reorder and delete. Hold the eye button
 to compare with the unfiltered page.
 
