@@ -516,6 +516,9 @@ function onPaper(image: RGBAImage, tint: readonly [number, number, number]): RGB
   return image;
 }
 
+/** Colour layer pixels this close to grey (max − min, 0..255) are left grey. */
+const NEUTRAL_CHROMA = 10;
+
 /**
  * Per output pixel, 1 inside photos, colour areas and dark areas (which the
  * Document filter shows as they are), 0 on paper and pale neutral tints.
@@ -672,11 +675,16 @@ export function applyFilter(
   const { cols, rows, block } = analysis.surface;
   const cd = color.data;
   for (let i = 0, p = 0; i < ink.length; i++, p += 4) {
-    const w = picture ? Math.max(weight.data[i], picture.data[i]) : weight.data[i];
+    const inPicture = picture !== null && picture.data[i] > 0;
+    const w = inPicture ? Math.max(weight.data[i], picture.data[i]) : weight.data[i];
     if (w <= 0) continue;
     let r = cd[p];
     let g = cd[p + 1];
     let b = cd[p + 2];
+    // Outside photos, a colour that is grey but for a faint cast adds no
+    // colour, only noise: blending it in would make an otherwise grey page
+    // need three channels in the PDF (three times the size).
+    if (!inPicture && Math.max(r, g, b) - Math.min(r, g, b) <= NEUTRAL_CHROMA) continue;
     if (fills) {
       const x = i % src.width;
       const y = (i - x) / src.width;
