@@ -29,7 +29,7 @@ export interface CleanupOptions {
   speck: number;
   /** A faint blob smaller than this is noise. */
   faintMinArea: number;
-  /** Faint, thin blobs shorter than this are shadow dashes (folds, creases). */
+  /** Faint, thin streaks shorter than this are fold or crease shadows. */
   dashMaxLength: number;
   /** Width of the border band in which edge slivers are removed. */
   band: number;
@@ -114,14 +114,25 @@ export function keepBlobs(
       keep[l] = 1;
       return;
     }
-    if (b.area < options.faintMinArea) return;
-    // Faint print (grey rules, grey small print) is still reasonably dark
+    // Faint print (grey rules, grey small print, and thin glyphs or dots at
+    // low resolution, which never reach full black) is still reasonably dark
     // somewhere and has crisp edges; fold and crease shading is light and soft.
     if (b.minLuma > FAINT_MAX_LUMA || b.maxGradient < options.faintMinGradient) return;
+    // Tiny faint blobs are noise unless they are clearly dark and crisp: at
+    // preview size an i-dot is only a few pixels.
+    if (
+      b.area < options.faintMinArea &&
+      (b.area < 2 || b.minLuma > 0.55 || b.maxGradient < options.faintMinGradient * 1.5)
+    ) {
+      return;
+    }
+    // Short, thin, never-dark streaks are the shadows of folds and creases.
+    // A real glyph, even a thin one at low resolution, gets darker than this.
     const { w, h } = size(b);
     const length = Math.max(w, h);
-    const thickness = Math.min(w, h);
-    if (length >= 3 * thickness && length < options.dashMaxLength) return;
+    if (b.minLuma > 0.45 && length >= 3 * Math.min(w, h) && length < options.dashMaxLength) {
+      return;
+    }
     keep[l] = 1;
   });
   for (const l of findPunchHoles(blobs, keep, width, height)) keep[l] = 0;
@@ -132,11 +143,13 @@ export function keepBlobs(
  * Punch holes, or rather the shadows inside them, as labels to remove.
  *
  * ISO 838 filing holes are ~6 mm across, centred 12 mm from the paper edge
- * and 80 mm apart. A candidate must match that geometry closely (centre 3-10%
- * of the short edge in from a long edge, size 1.5-4.5% of it) and not overlap
- * any other content. Holes are removed only in pairs at the right spacing
- * (20-34% of the long edge, allowing for other paper sizes), so a margin note
- * or a bullet is never mistaken for one.
+ * and 80 mm apart. A candidate must match that geometry (centre 3.5-7.5% of
+ * the short edge in from a long edge, 1.5-4.5% across, roughly round) and not
+ * overlap other content. Holes are removed only in pairs that also match each
+ * other: same distance from the edge (one punch made both), similar size, and
+ * the ISO spacing (20-34% of the long edge, allowing for other paper sizes).
+ * Text at the left margin can look hole-sized at low resolution, where
+ * letters merge into word-sized blobs; it fails the matching.
  */
 export function findPunchHoles(
   blobs: (Blob | null)[],
@@ -148,20 +161,25 @@ export function findPunchHoles(
   const long = Math.max(width, height);
   const portrait = height >= width;
 
-  const candidates: { label: number; side: number; along: number }[] = [];
+  const candidates: {
+    label: number;
+    side: number;
+    across: number;
+    along: number;
+    size: number;
+  }[] = [];
   blobs.forEach((b, l) => {
     if (!b || !keep[l]) return;
     const { w, h } = size(b);
-    if (Math.max(w, h) < 0.015 * short || Math.max(w, h) > 0.045 * short) return;
-    if (Math.min(w, h) < 0.005 * short) return;
+    const big = Math.max(w, h);
+    if (big < 0.015 * short || big > 0.045 * short) return;
+    if (big > 2 * Math.min(w, h)) return;
     const cx = (b.minX + b.maxX) / 2;
     const cy = (b.minY + b.maxY) / 2;
-    const across = portrait ? cx : cy;
     const span = portrait ? width : height;
-    let side: number;
-    if (across > 0.03 * short && across < 0.1 * short) side = 0;
-    else if (across < span - 0.03 * short && across > span - 0.1 * short) side = 1;
-    else return;
+    const across = portrait ? cx : cy;
+    const fromEdge = Math.min(across, span - across);
+    if (fromEdge < 0.035 * short || fromEdge > 0.075 * short) return;
     const overlaps = blobs.some(
       (o, m) =>
         o &&
@@ -173,7 +191,13 @@ export function findPunchHoles(
         o.minY <= b.maxY,
     );
     if (overlaps) return;
-    candidates.push({ label: l, side, along: portrait ? cy : cx });
+    candidates.push({
+      label: l,
+      side: across < span / 2 ? 0 : 1,
+      across: fromEdge,
+      along: portrait ? cy : cx,
+      size: big,
+    });
   });
 
   const holes = new Set<number>();
@@ -182,6 +206,8 @@ export function findPunchHoles(
       const a = candidates[i];
       const b = candidates[j];
       if (a.side !== b.side) continue;
+      if (Math.abs(a.across - b.across) > 0.01 * short) continue;
+      if (Math.max(a.size, b.size) > 1.5 * Math.min(a.size, b.size)) continue;
       const gap = Math.abs(a.along - b.along) / long;
       if (gap >= 0.2 && gap <= 0.34) {
         holes.add(a.label);

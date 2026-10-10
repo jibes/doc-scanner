@@ -325,8 +325,8 @@ describe('text fidelity on a camera-blurred page', () => {
     softRect(img, 400, 1000, 900, 1004, 175, 6);
     // Punch-hole shadows: two crescent-ish dark marks 12 mm from the left
     // edge, 80 mm apart (on A4 at this size: x ~ 71 px, gap ~ 472 px).
-    softRect(img, 58, 700, 86, 712, 60, 2);
-    softRect(img, 58, 1172, 86, 1184, 60, 2);
+    softRect(img, 58, 698, 82, 714, 60, 2);
+    softRect(img, 58, 1170, 82, 1186, 60, 2);
     return img;
   }
 
@@ -357,8 +357,8 @@ describe('text fidelity on a camera-blurred page', () => {
   });
 
   it('removes a pair of punch holes but not a single mark', () => {
-    expect(px(out, 72, 706)[0]).toBe(255);
-    expect(px(out, 72, 1178)[0]).toBe(255);
+    expect(px(out, 70, 706)[0]).toBe(255);
+    expect(px(out, 70, 1178)[0]).toBe(255);
     const single = page();
     // Paint over the second hole: now there is only one, so it is not a hole.
     for (let y = 1165; y < 1192; y++)
@@ -366,6 +366,31 @@ describe('text fidelity on a camera-blurred page', () => {
         const p = (y * W + x) * 4;
         single.data[p] = single.data[p + 1] = single.data[p + 2] = 235;
       }
-    expect(px(applyFilter(single, 'document'), 72, 706)[0]).toBeLessThan(100);
+    expect(px(applyFilter(single, 'document'), 70, 706)[0]).toBeLessThan(100);
+  });
+});
+
+describe('low-resolution previews keep every letter', () => {
+  // A 1600 px page, as the page editor renders it.
+  const W = 1131;
+  const H = 1600;
+
+  it('does not mistake left-margin words for punch holes', () => {
+    const img = fill(W, H, [235, 235, 235]);
+    // Two word-sized blobs at the left margin, 80 mm apart on A4 (as in
+    // "Prod.-Nr." and a footer line), but of different widths, so their
+    // centres differ the way text does and punched holes never do.
+    softRect(img, 70, 500, 104, 512, 20, 1.5);
+    softRect(img, 70, 930, 118, 942, 20, 1.5);
+    const out = applyFilter(img, 'document');
+    expect(px(out, 86, 506)[0]).toBeLessThan(60);
+    expect(px(out, 94, 936)[0]).toBeLessThan(60);
+  });
+
+  it('keeps a 2 px dot', () => {
+    const img = fill(W, H, [235, 235, 235]);
+    softRect(img, 500, 500, 502, 502, 25, 1);
+    const out = applyFilter(img, 'document');
+    expect(px(out, 500, 500)[0]).toBeLessThan(120);
   });
 });

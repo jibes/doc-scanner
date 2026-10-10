@@ -52,12 +52,12 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
 const INK_WINDOW = 0.004;
 /** Window for "darker than its surroundings": a few lines of text. */
 const CONTEXT_WINDOW = 0.012;
+/** Faint thin streaks shorter than this are fold or crease shadows. */
+const DASH_LENGTH = 0.06;
 /** Below this ink-to-paper contrast nothing is print. */
 const MIN_INK_CONTRAST = 0.2;
 /** Faint blobs with an area below this length squared are noise. */
 const FAINT_EDGE = 0.0025;
-/** Faint thin blobs shorter than this are fold or crease shadows. */
-const DASH_LENGTH = 0.06;
 const SPECK_EDGE = 0.0006;
 const COLOR_BLOB_EDGE = 0.004;
 /** Width of the border band in which edge slivers are removed. */
@@ -232,7 +232,7 @@ function inkCoverage(
   const band = Math.max(3, Math.round(L * BORDER_BAND));
   const { labels, blobs } = measureBlobs(touched, luma, band);
   const keep = keepBlobs(blobs, width, height, {
-    speck: Math.max(3, Math.round((L * SPECK_EDGE) ** 2)),
+    speck: Math.max(2, Math.round((L * SPECK_EDGE) ** 2)),
     faintMinArea: Math.max(12, Math.round((L * FAINT_EDGE) ** 2)),
     dashMaxLength: L * DASH_LENGTH,
     band,
