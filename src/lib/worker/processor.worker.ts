@@ -138,25 +138,31 @@ function isNeutral(image: RGBAImage): boolean {
   return true;
 }
 
+async function encodeJpeg(image: RGBAImage, quality: number): Promise<PdfImage> {
+  const canvas = new OffscreenCanvas(image.width, image.height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not create a 2D canvas context');
+  ctx.putImageData(rgbaToImageData(image), 0, 0);
+  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality });
+  canvas.width = canvas.height = 0;
+  return { kind: 'jpeg', bytes: new Uint8Array(await blob.arrayBuffer()), components: 3 };
+}
+
+/** Losslessly stored Document pages larger than this are tried as JPEG too. */
+const PHOTO_PAGE_BYTES = 800 * 1024;
+
 /**
  * Lossless (Flate, PNG-predicted where that helps) for the clean filters:
  * their output is flat white with crisp ink, which JPEG would both bloat and
- * ring around. JPEG only for the photographic ones.
+ * ring around. JPEG for the photographic ones, and for Document pages that
+ * are mostly photograph.
  */
 async function encodeForPdf(
   image: RGBAImage,
   filter: FilterId,
   quality: number,
 ): Promise<PdfImage> {
-  if (filter === 'color' || filter === 'original') {
-    const canvas = new OffscreenCanvas(image.width, image.height);
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Could not create a 2D canvas context');
-    ctx.putImageData(rgbaToImageData(image), 0, 0);
-    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality });
-    canvas.width = canvas.height = 0;
-    return { kind: 'jpeg', bytes: new Uint8Array(await blob.arrayBuffer()), components: 3 };
-  }
+  if (filter === 'color' || filter === 'original') return encodeJpeg(image, quality);
 
   const gray = isGrayFilter(filter) || isNeutral(image);
   const channels = gray ? 1 : 3;
@@ -173,6 +179,13 @@ async function encodeForPdf(
   // tones, so it is only tried, and kept if smaller, for the grey filter.
   const plain = await deflate(samples);
   if (filter !== 'gray') {
+    // A Document page with photos on it is mostly photograph, which deflate
+    // barely shrinks: there JPEG is far smaller, at a quality that leaves
+    // the text crisp.
+    if (filter === 'document' && plain.length > PHOTO_PAGE_BYTES) {
+      const jpeg = await encodeJpeg(image, quality);
+      if (jpeg.bytes.length < plain.length * 0.6) return jpeg;
+    }
     return { kind: 'flate', bytes: plain, components: channels, predictor: false };
   }
   const predicted = await deflate(pngPredict(samples, image.width, image.height, channels));

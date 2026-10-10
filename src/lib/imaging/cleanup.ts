@@ -17,6 +17,8 @@ export interface Blob {
   touchesBorder: boolean;
   /** Steepest luma step (per pixel) inside the blob: print is crisp, shading is soft. */
   maxGradient: number;
+  /** Pixels on the blob's outline (with a 4-neighbour outside it). */
+  perimeter: number;
 }
 
 /** Luma below which a pixel is unmistakably print. */
@@ -29,12 +31,14 @@ export interface CleanupOptions {
   speck: number;
   /** A faint blob smaller than this is noise. */
   faintMinArea: number;
-  /** Faint blobs thicker than this on average are shading, not print. */
+  /** Faint blobs with strokes wider than this are shading, not print. */
   faintMaxThickness: number;
   /** Faint, thin streaks shorter than this are fold or crease shadows. */
   dashMaxLength: number;
   /** Width of the border band in which edge slivers are removed. */
   band: number;
+  /** Longest stroke that can be a single letter. */
+  glyphMaxLength: number;
   /** Minimum edge steepness (luma per pixel) for a faint blob to count as print. */
   faintMinGradient: number;
 }
@@ -59,6 +63,7 @@ export function measureBlobs(
           inBand: 0,
           touchesBorder: false,
           maxGradient: 0,
+          perimeter: 0,
         }
       : null,
   );
@@ -78,6 +83,19 @@ export function measureBlobs(
       if (v < DARK) b.dark++;
       if (yBand || x < band || x >= width - band) b.inBand++;
       if (yEdge || x === 0 || x === width - 1) b.touchesBorder = true;
+      const l = labels[i];
+      if (
+        x === 0 ||
+        y === 0 ||
+        x === width - 1 ||
+        y === height - 1 ||
+        labels[i - 1] !== l ||
+        labels[i + 1] !== l ||
+        labels[i - width] !== l ||
+        labels[i + width] !== l
+      ) {
+        b.perimeter++;
+      }
       if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
         const gx = (luma.data[i + 1] - luma.data[i - 1]) / 2;
         const gy = (luma.data[i + width] - luma.data[i - width]) / 2;
@@ -156,6 +174,8 @@ export function keepBlobs(
     return false;
   };
 
+  const doubtful: number[] = [];
+  const keptFaint: number[] = [];
   for (const l of faint) {
     const b = blobs[l]!;
     if (b.area < 2) continue;
@@ -167,25 +187,63 @@ export function keepBlobs(
       keep[l] = 1;
       continue;
     }
-    // Away from text it must also be crisp; fold and crease shading is soft.
-    if (b.maxGradient < options.faintMinGradient) continue;
-    // Away from text, a tiny faint blob is noise unless clearly dark and crisp.
-    if (
-      b.area < options.faintMinArea &&
-      (b.minLuma > 0.55 || b.maxGradient < options.faintMinGradient * 1.5)
-    ) {
+    // Faint print is made of strokes a few pixels wide. Wrinkle and crease
+    // shadows are broad patches: their width (twice the area over the
+    // outline) is far beyond any stroke.
+    const stroke = (2 * b.area) / Math.max(1, b.perimeter);
+    if (stroke > options.faintMaxThickness) continue;
+    // Short, thin, never-dark streaks are what folds and creases leave
+    // behind, straight or diagonal. Printed rules run much further. A streak
+    // is a single stroke: its outline is not much longer than twice its
+    // length, unlike a word, whose letters each add their own outline.
+    const extent = Math.max(b.maxX - b.minX + 1, b.maxY - b.minY + 1);
+    const elongated = extent >= 6 * stroke && b.perimeter < 2.8 * extent;
+    if (b.minLuma > 0.45 && elongated && extent < options.dashMaxLength) {
+      // ...unless it is letter-sized (an l, a 1) and on a line of faint print.
+      if (extent < options.glyphMaxLength) doubtful.push(l);
       continue;
     }
-    // Faint print is made of strokes and lines a few pixels thick. Wrinkle
-    // and crease shadows are broad patches: their average thickness (area
-    // over length) is far beyond any stroke.
-    const extent = Math.max(b.maxX - b.minX + 1, b.maxY - b.minY + 1);
-    const thickness = b.area / extent;
-    if (thickness > options.faintMaxThickness) continue;
-    // Short, thin, never-dark streaks are what folds and creases leave
-    // behind, straight or diagonal. Printed rules run much further.
-    if (b.minLuma > 0.45 && extent >= 6 * thickness && extent < options.dashMaxLength) continue;
+    // Away from text it must also be crisp, for its contrast: fold and
+    // crease shading is soft. A lighter print has gentler edges, so the
+    // bar falls with the contrast.
+    const crisp = options.faintMinGradient * Math.min(1, (1 - b.minLuma) / 0.6);
+    // Away from text, a tiny faint blob is noise unless clearly dark and crisp.
+    if (
+      b.maxGradient < crisp ||
+      (b.area < options.faintMinArea && (b.minLuma > 0.55 || b.maxGradient < crisp * 1.5))
+    ) {
+      if (!elongated && b.maxGradient >= crisp * 0.6) doubtful.push(l);
+      continue;
+    }
     keep[l] = 1;
+    if (!elongated) keptFaint.push(l);
+  }
+
+  // Lines of faint print (a faded receipt, a grey footer) vouch for the
+  // softer, smaller marks among them (punctuation, thin letters), as dark
+  // text does above. It takes a few glyphs: one stray mark vouches for
+  // nothing.
+  if (doubtful.length && keptFaint.length >= 3) {
+    const votes = new Uint16Array(cols * rows);
+    for (const l of keptFaint) {
+      const b = blobs[l]!;
+      if (Math.max(b.maxX - b.minX, b.maxY - b.minY) > 0.06 * long) continue;
+      votes[
+        Math.floor((b.minY + b.maxY) / 2 / cell) * cols + Math.floor((b.minX + b.maxX) / 2 / cell)
+      ]++;
+    }
+    for (const l of doubtful) {
+      const b = blobs[l]!;
+      const cx = Math.floor((b.minX + b.maxX) / 2 / cell);
+      const cy = Math.floor((b.minY + b.maxY) / 2 / cell);
+      let count = 0;
+      for (let y = Math.max(0, cy - 1); y <= Math.min(rows - 1, cy + 1); y++) {
+        for (let x = Math.max(0, cx - 3); x <= Math.min(cols - 1, cx + 3); x++) {
+          count += votes[y * cols + x];
+        }
+      }
+      if (count >= 2) keep[l] = 1;
+    }
   }
   return keep;
 }
