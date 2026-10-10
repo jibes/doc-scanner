@@ -379,6 +379,32 @@ describe('low-resolution previews keep every letter', () => {
 });
 
 describe('text near the page edge and the margins is never removed', () => {
+  it('keeps a line of faint small letters below darker text', () => {
+    // A footer partly in shadow: one line comes out dark, the next only
+    // faintly, its letters each smaller than a speck threshold would allow.
+    const W = 2480;
+    const H = 3500;
+    const img = fill(W, H, [235, 235, 235]);
+    for (let i = 0; i < 8; i++) {
+      softRect(img, 600 + i * 16, 3390, 606 + i * 16, 3402, 20, 1.5);
+      softRect(img, 600 + i * 16, 3420, 606 + i * 16, 3432, 145, 1.5);
+    }
+    const out = applyFilter(img, 'bw');
+    for (let i = 0; i < 8; i++) expect(px(out, 603 + i * 16, 3426)[0]).toBeLessThan(100);
+  });
+
+  it('keeps soft full stops next to text', () => {
+    // On a soft photo a full stop never gets dark: faint, tiny, but on a line
+    // of text, so it stays.
+    const W = 2480;
+    const H = 3500;
+    const img = fill(W, H, [235, 235, 235]);
+    for (let i = 0; i < 6; i++) softRect(img, 800 + i * 30, 1000, 812 + i * 30, 1030, 25, 1.5);
+    softRect(img, 985, 1024, 990, 1029, 145, 1.5);
+    const out = applyFilter(img, 'document');
+    expect(px(out, 987, 1026)[0]).toBeLessThan(200);
+  });
+
   it('keeps a line of small text set just inside the bottom edge', () => {
     // A tightly cropped page: the last line sits within the border band.
     const W = 2480;
