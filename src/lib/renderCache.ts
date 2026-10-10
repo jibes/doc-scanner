@@ -23,6 +23,19 @@ export function renderKey(page: Page, longEdge: number, unfiltered: boolean): st
   return `${blobId}|${longEdge}|${unfiltered ? 1 : 0}|${JSON.stringify(page.spec)}`;
 }
 
+/** Close and drop every render of this photo (its page was deleted or retaken). */
+export function dropRenders(source: Blob): void {
+  const blobId = blobIds.get(source);
+  if (!blobId) return;
+  const prefix = `${blobId}|`;
+  for (const [key, entry] of entries) {
+    if (!key.startsWith(prefix)) continue;
+    entries.delete(key);
+    total -= entry.pixels;
+    entry.bitmap.close();
+  }
+}
+
 export function getRender(key: string): ImageBitmap | null {
   const hit = entries.get(key);
   if (!hit) return null;

@@ -8,9 +8,10 @@ import {
   loadPages,
   loadTitle,
   putPage,
+  putRecords,
   requestPersistence,
   saveTitle,
-  type StoredPage,
+  type PageRecord,
 } from './db';
 
 export interface Page {
@@ -29,7 +30,25 @@ function newId(): string {
   return crypto.randomUUID();
 }
 
-function fromStored(stored: StoredPage): Page {
+/**
+ * Edits are saved together, at most once per this interval, so a slider drag
+ * is a handful of small writes rather than one per tick.
+ */
+const SAVE_DELAY_MS = 300;
+
+function toRecord(page: Page, order: number): PageRecord {
+  return {
+    id: page.id,
+    order,
+    width: page.width,
+    height: page.height,
+    spec: page.spec,
+    detected: page.detected,
+    sharpness: page.sharpness,
+  };
+}
+
+function fromStored(stored: PageRecord & { source: Blob }): Page {
   return {
     id: stored.id,
     source: stored.source,
@@ -89,17 +108,61 @@ class Session {
     if (!this.title) this.title = title;
   }
 
+  /** Pages whose metadata changed since the last save. */
+  private dirty = new Set<string>();
+  private saveTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Bumped whenever the document is discarded, so that an Undo offered for
+   * the old document cannot bring its pages into the new one.
+   */
+  private generation = 0;
+
+  constructor() {
+    // The app may be killed in the background without another event.
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') this.flush();
+      });
+      addEventListener('pagehide', () => this.flush());
+    }
+  }
+
+  private reportSaved(saved: boolean): void {
+    if (saved || this.warnedUnsaved) return;
+    this.warnedUnsaved = true;
+    toast('Pages are not being saved on this device. Export them before closing the app.', 'err');
+  }
+
+  /** Save a page with its photo, straight away: only for new photos. */
   private persist(page: Page): void {
     const order = this.pages.findIndex((p) => p.id === page.id);
-    void putPage({ ...page, order } satisfies StoredPage).then((saved) => {
-      if (saved || this.warnedUnsaved) return;
-      this.warnedUnsaved = true;
-      toast('Pages are not being saved on this device. Export them before closing the app.', 'err');
-    });
+    this.dirty.delete(page.id);
+    void putPage({ ...toRecord(page, order), source: page.source }).then((saved) =>
+      this.reportSaved(saved),
+    );
+  }
+
+  /** Save these pages' metadata (spec, position) soon, without their photos. */
+  private touch(ids: Iterable<string>): void {
+    for (const id of ids) this.dirty.add(id);
+    this.saveTimer ??= setTimeout(() => this.flush(), SAVE_DELAY_MS);
   }
 
   private persistOrder(): void {
-    for (const page of this.pages) this.persist(page);
+    this.touch(this.pages.map((p) => p.id));
+  }
+
+  /** Write pending metadata now. */
+  flush(): void {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = undefined;
+    if (this.dirty.size === 0) return;
+    const records: PageRecord[] = [];
+    this.pages.forEach((page, order) => {
+      if (this.dirty.has(page.id)) records.push(toRecord(page, order));
+    });
+    this.dirty.clear();
+    void putRecords(records).then((saved) => this.reportSaved(saved));
   }
 
   add(page: Omit<Page, 'id'>): Page {
@@ -115,13 +178,13 @@ class Session {
   }
 
   update(id: string, spec: Partial<PageSpec>): void {
-    let changed: Page | undefined;
+    let changed = false;
     this.pages = this.pages.map((p) => {
       if (p.id !== id) return p;
-      changed = { ...p, spec: { ...p.spec, ...spec } };
-      return changed;
+      changed = true;
+      return { ...p, spec: { ...p.spec, ...spec } };
     });
-    if (changed) this.persist(changed);
+    if (changed) this.touch([id]);
   }
 
   /** Replace the source photo, e.g. after a retake, keeping the page's position. */
@@ -147,14 +210,18 @@ class Session {
   remove(id: string): () => void {
     const index = this.pages.findIndex((p) => p.id === id);
     const page = this.pages[index];
+    const generation = this.generation;
     this.pages = this.pages.filter((p) => p.id !== id);
+    this.dirty.delete(id);
     void deletePage(id);
     this.persistOrder();
     return () => {
-      if (!page || this.get(page.id)) return;
+      if (!page || this.generation !== generation || this.get(page.id)) return;
       const next = [...this.pages];
       next.splice(Math.min(index, next.length), 0, page);
       this.pages = next;
+      // Its photo was deleted with it.
+      this.persist(page);
       this.persistOrder();
     };
   }
@@ -172,13 +239,32 @@ class Session {
     this.persistOrder();
   }
 
-  /** Give every page the same filter and adjustments. */
-  applyToAll(spec: Pick<PageSpec, 'filter' | 'adjustments'>): void {
+  /**
+   * Give every page the same filter (and adjustments, if given). Returns a
+   * function that puts back each page's previous filter and adjustments.
+   */
+  applyToAll(spec: Pick<PageSpec, 'filter'> & Partial<Pick<PageSpec, 'adjustments'>>): () => void {
+    const before = new Map(
+      this.pages.map((p) => [p.id, { filter: p.spec.filter, adjustments: p.spec.adjustments }]),
+    );
+    const generation = this.generation;
     this.pages = this.pages.map((p) => ({
       ...p,
-      spec: { ...p.spec, filter: spec.filter, adjustments: { ...spec.adjustments } },
+      spec: {
+        ...p.spec,
+        filter: spec.filter,
+        adjustments: spec.adjustments ? { ...spec.adjustments } : p.spec.adjustments,
+      },
     }));
     this.persistOrder();
+    return () => {
+      if (this.generation !== generation) return;
+      this.pages = this.pages.map((p) => {
+        const old = before.get(p.id);
+        return old ? { ...p, spec: { ...p.spec, ...old } } : p;
+      });
+      this.persistOrder();
+    };
   }
 
   move(id: string, delta: number): void {
@@ -198,6 +284,10 @@ class Session {
   }
 
   clear(): void {
+    this.generation++;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = undefined;
+    this.dirty.clear();
     // Saved pages that were never restored were never seen: keep them.
     if (this.restored) void clearPages();
     else void deletePages(this.pages.map((p) => p.id));

@@ -80,7 +80,10 @@
   let track: MediaStreamTrack | null = null;
   let stream: MediaStream | null = null;
   let running = true;
+  /** The app is in the background: the camera is closed until it returns. */
+  let hidden = false;
   let openToken = 0;
+  let lastRestart = 0;
   let armed = true;
   let lastCaptured: Quad | null = null;
 
@@ -100,12 +103,20 @@
     return errorMessage(error);
   }
 
-  async function startCamera() {
-    const token = ++openToken;
+  /** Close the camera, and cancel an open in progress. */
+  function closeCamera() {
+    openToken++;
     stopStream(stream);
     stream = null;
     track = null;
     cameraReady = false;
+    // What was seen before is stale: auto-capture must start over.
+    resetTracking();
+  }
+
+  async function startCamera() {
+    closeCamera();
+    const token = openToken;
     cameraError = '';
     try {
       const camera = await openCamera(deviceId);
@@ -115,6 +126,7 @@
       }
       stream = camera.stream;
       track = camera.track;
+      watchTrack(camera.track);
       lensLabel = camera.label;
       torchAvailable = camera.torch;
       torchOn = false;
@@ -128,8 +140,43 @@
     }
   }
 
+  /**
+   * The browser ends the track when another app takes the camera, and some
+   * stop delivering frames (muted) during an interruption such as a call.
+   * Either way the last frame stays on screen and must not be captured.
+   */
+  function watchTrack(watched: MediaStreamTrack) {
+    watched.addEventListener('ended', () => {
+      if (watched !== track || !running || hidden) return;
+      // A camera that ends again straight away is not coming back by itself.
+      if (performance.now() - lastRestart < 3000) {
+        closeCamera();
+        cameraError = 'The camera stopped. It may be in use by another app.';
+        return;
+      }
+      lastRestart = performance.now();
+      void startCamera();
+    });
+    watched.addEventListener('mute', () => {
+      if (watched === track) resetTracking();
+    });
+  }
+
+  function visibilityChanged() {
+    if (document.visibilityState === 'hidden') {
+      // Leave the camera to other apps, and stop detecting on a frozen frame.
+      hidden = true;
+      closeCamera();
+    } else if (hidden) {
+      hidden = false;
+      void startCamera();
+    }
+  }
+
   onMount(() => {
-    void startCamera();
+    hidden = document.visibilityState === 'hidden';
+    if (!hidden) void startCamera();
+    document.addEventListener('visibilitychange', visibilityChanged);
     pageDetector.ready
       .then(() => (detectorState = 'ready'))
       .catch(() => (detectorState = 'failed'));
@@ -147,6 +194,7 @@
     return () => {
       running = false;
       openToken++;
+      document.removeEventListener('visibilitychange', visibilityChanged);
       cancelAnimationFrame(frame);
       clearTimeout(addedTimer);
       observer.disconnect();
@@ -172,6 +220,13 @@
   let raw: Quad | null = null;
   let misses = 0;
   let steadySince = 0;
+
+  function resetTracking() {
+    raw = null;
+    quad = null;
+    steady = 0;
+    misses = 0;
+  }
 
   function onDetection(detection: Detection | null) {
     const now = performance.now();
@@ -255,6 +310,8 @@
       if (
         detectorState !== 'ready' ||
         !cameraReady ||
+        hidden ||
+        track?.muted ||
         capturing ||
         !video ||
         video.readyState < 2
@@ -268,7 +325,8 @@
         ctx?.drawImage(video, 0, 0, MODEL_INPUT, MODEL_INPUT);
         const bitmap = await createImageBitmap(canvas);
         const { detection } = await pageDetector.frame(bitmap);
-        if (running && !capturing) onDetection(detection);
+        // The camera may have been closed or paused while the frame was in flight.
+        if (running && !capturing && cameraReady && !track?.muted) onDetection(detection);
       } catch {
         if (pageDetector.dead) {
           detectorState = 'failed';
@@ -329,6 +387,9 @@
       setTimeout(() => (flash = false), 180);
       haptic('capture');
       const { id, found, blurred } = await addPhoto(still);
+      // The page is kept, but a camera screen that has closed meanwhile must
+      // not navigate anywhere.
+      if (!running) return;
       if (!retakeId) {
         added = session.pages.length;
         clearTimeout(addedTimer);
@@ -342,7 +403,7 @@
         onCrop(id);
       }
     } catch (error) {
-      toast(`Capture failed: ${errorMessage(error)}`, 'err');
+      if (running && !hidden) toast(`Capture failed: ${errorMessage(error)}`, 'err');
     } finally {
       exposing = false;
       capturing = false;
@@ -367,6 +428,7 @@
     } finally {
       capturing = false;
     }
+    if (!running) return;
     if (retakeId) onRetaken(retakeId);
     else {
       if (missing) toast(`${missing} page(s) had no detectable edges; check their crop.`, 'info');

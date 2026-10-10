@@ -1,6 +1,6 @@
 import type { PageSpec } from '../pipeline';
 
-/** What is persisted per page. The source photo is kept; results are re-rendered. */
+/** A saved page. The source photo is kept; results are re-rendered. */
 export interface StoredPage {
   id: string;
   order: number;
@@ -13,6 +13,13 @@ export interface StoredPage {
   /** Older sessions have no sharpness. */
   sharpness?: number | null;
 }
+
+/**
+ * What the pages store holds: everything but the photo. The multi-megabyte
+ * source lives in its own store, keyed by page id, so that moving a slider
+ * or reordering pages rewrites a few hundred bytes rather than every photo.
+ */
+export type PageRecord = Omit<StoredPage, 'source'>;
 
 /** A finished document: saved/shared as a PDF, or uploaded to Paperless. */
 export interface HistoryEntry {
@@ -31,8 +38,9 @@ export interface HistoryEntry {
 }
 
 const DB_NAME = 'doc-scanner';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = 'pages';
+const SOURCES = 'sources';
 const META = 'meta';
 const HISTORY = 'history';
 /** PDFs are kept for this many recent history entries. */
@@ -70,6 +78,10 @@ function connect(): Promise<IDBDatabase> {
           db.createObjectStore(META);
         }
         if (event.oldVersion < 2) db.createObjectStore(HISTORY, { keyPath: 'id' });
+        if (event.oldVersion < 3) {
+          db.createObjectStore(SOURCES);
+          if (event.oldVersion >= 1) moveSourcesOut(request.transaction!);
+        }
       };
       request.onsuccess = () => {
         const db = request.result;
@@ -105,6 +117,22 @@ function connect(): Promise<IDBDatabase> {
   return current;
 }
 
+/** Version 3: pages saved with their photo inline get it moved to SOURCES. */
+function moveSourcesOut(tx: IDBTransaction): void {
+  const sources = tx.objectStore(SOURCES);
+  const cursor = tx.objectStore(STORE).openCursor();
+  cursor.onsuccess = () => {
+    const at = cursor.result;
+    if (!at) return;
+    const { source, ...record } = at.value as StoredPage;
+    if (source) {
+      sources.put(source, record.id);
+      at.update(record);
+    }
+    at.continue();
+  };
+}
+
 function forget(stale: Promise<IDBDatabase>): void {
   if (connection === stale) connection = null;
 }
@@ -133,15 +161,17 @@ function connectionLost(error: unknown): boolean {
   );
 }
 
+type Action<T> = (tx: IDBTransaction) => IDBRequest<T> | void;
+
 function attempt<T>(
   db: IDBDatabase,
-  store: string,
+  stores: string[],
   mode: IDBTransactionMode,
-  action: (s: IDBObjectStore) => IDBRequest<T> | void,
+  action: Action<T>,
 ): Promise<T | undefined> {
   return new Promise<T | undefined>((resolve, reject) => {
-    const tx = db.transaction(store, mode);
-    const request = action(tx.objectStore(store));
+    const tx = db.transaction(stores, mode);
+    const request = action(tx);
     tx.oncomplete = () => resolve(request ? request.result : undefined);
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
@@ -149,15 +179,15 @@ function attempt<T>(
 }
 
 /**
- * Run one request in its own transaction. Reads give up after
+ * Run one action in its own transaction over `stores`. Reads give up after
  * OPEN_TIMEOUT_MS so the app can start; writes wait for storage, so they
  * land once a slow open finishes. A lost connection is reopened once (every
  * action here is idempotent, so repeating it is safe).
  */
-async function run<T>(
-  store: string,
+async function runAll<T>(
+  stores: string[],
   mode: IDBTransactionMode,
-  action: (s: IDBObjectStore) => IDBRequest<T> | void,
+  action: Action<T>,
   timeoutMs = mode === 'readonly' ? OPEN_TIMEOUT_MS : Infinity,
 ): Promise<T | undefined> {
   const bounded = (pending: Promise<IDBDatabase>) =>
@@ -165,13 +195,23 @@ async function run<T>(
   const opened = connect();
   const db = await bounded(opened);
   try {
-    return await attempt(db, store, mode, action);
+    return await attempt(db, stores, mode, action);
   } catch (error) {
     if (!connectionLost(error)) throw error;
     forget(opened);
     db.close();
-    return attempt(await bounded(connect()), store, mode, action);
+    return attempt(await bounded(connect()), stores, mode, action);
   }
+}
+
+/** One request against one store. */
+function run<T>(
+  store: string,
+  mode: IDBTransactionMode,
+  action: (s: IDBObjectStore) => IDBRequest<T> | void,
+  timeoutMs?: number,
+): Promise<T | undefined> {
+  return runAll([store], mode, (tx) => action(tx.objectStore(store)), timeoutMs);
 }
 
 /*
@@ -181,48 +221,94 @@ async function run<T>(
 
 /**
  * The saved pages in order, or null if storage could not be read (as opposed
- * to there being none). With `wait`, waits for a slow open to finish.
+ * to there being none). With `wait`, waits for a slow open to finish. A page
+ * whose photo is missing cannot be shown and is left out.
  */
 export async function loadPages(wait = false): Promise<StoredPage[] | null> {
+  let records: PageRecord[] = [];
+  let ids: IDBValidKey[] = [];
+  let blobs: Blob[] = [];
   try {
-    const pages =
-      (await run<StoredPage[]>(
-        STORE,
-        'readonly',
-        (s) => s.getAll(),
-        wait ? Infinity : OPEN_TIMEOUT_MS,
-      )) ?? [];
-    return pages.sort((a, b) => a.order - b.order);
+    await runAll(
+      [STORE, SOURCES],
+      'readonly',
+      (tx) => {
+        const pages = tx.objectStore(STORE).getAll();
+        pages.onsuccess = () => (records = pages.result as PageRecord[]);
+        const keys = tx.objectStore(SOURCES).getAllKeys();
+        keys.onsuccess = () => (ids = keys.result);
+        const values = tx.objectStore(SOURCES).getAll();
+        values.onsuccess = () => (blobs = values.result as Blob[]);
+      },
+      wait ? Infinity : OPEN_TIMEOUT_MS,
+    );
   } catch {
     return null;
   }
+  const sources = new Map(ids.map((id, i) => [id, blobs[i]]));
+  const pages: StoredPage[] = [];
+  for (const record of records) {
+    const source = sources.get(record.id);
+    if (source) pages.push({ ...record, source });
+  }
+  return pages.sort((a, b) => a.order - b.order);
 }
 
-/** Returns false if the page could not be saved. */
+/** Save a page with its photo. Returns false if it could not be saved. */
 export async function putPage(page: StoredPage): Promise<boolean> {
+  const { source, ...record } = page;
   try {
-    await run(STORE, 'readwrite', (s) => s.put(page));
+    await runAll([STORE, SOURCES], 'readwrite', (tx) => {
+      tx.objectStore(SOURCES).put(source, record.id);
+      tx.objectStore(STORE).put(record);
+    });
     return true;
   } catch {
     return false;
   }
 }
 
-export async function deletePage(id: string): Promise<void> {
+/**
+ * Save the metadata (spec, order, ...) of pages whose photo is already
+ * saved, in one transaction. Returns false if they could not be saved.
+ */
+export async function putRecords(records: PageRecord[]): Promise<boolean> {
+  if (records.length === 0) return true;
   try {
-    await run(STORE, 'readwrite', (s) => s.delete(id));
+    await runAll([STORE], 'readwrite', (tx) => {
+      const store = tx.objectStore(STORE);
+      for (const record of records) store.put(record);
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function deletePages(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    await runAll([STORE, SOURCES], 'readwrite', (tx) => {
+      for (const id of ids) {
+        tx.objectStore(STORE).delete(id);
+        tx.objectStore(SOURCES).delete(id);
+      }
+    });
   } catch {
     // See above.
   }
 }
 
-export async function deletePages(ids: string[]): Promise<void> {
-  for (const id of ids) await deletePage(id);
+export function deletePage(id: string): Promise<void> {
+  return deletePages([id]);
 }
 
 export async function clearPages(): Promise<void> {
   try {
-    await run(STORE, 'readwrite', (s) => s.clear());
+    await runAll([STORE, SOURCES], 'readwrite', (tx) => {
+      tx.objectStore(STORE).clear();
+      tx.objectStore(SOURCES).clear();
+    });
   } catch {
     // See above.
   }
