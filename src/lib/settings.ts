@@ -77,7 +77,8 @@ export function saveSettings(settings: AppSettings): void {
 }
 
 /** Hosts that browsers treat as secure even over plain http. */
-const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+// Not [::1]: the Content Security Policy cannot name IPv6 addresses.
+const LOOPBACK = new Set(['localhost', '127.0.0.1']);
 
 export type ServerUrlCheck = { ok: true; url: string } | { ok: false; error: string };
 

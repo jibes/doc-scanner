@@ -24,7 +24,7 @@ describe('normalizeServerUrl', () => {
       url: 'http://localhost:8000',
     });
     expect(normalizeServerUrl('http://127.0.0.1:8000').ok).toBe(true);
-    expect(normalizeServerUrl('http://[::1]:8000').ok).toBe(true);
+    expect(normalizeServerUrl('http://[::1]:8000').ok).toBe(false);
     const lan = normalizeServerUrl('http://192.168.1.5:8000');
     expect(lan.ok).toBe(false);
     expect(!lan.ok && lan.error).toMatch(/https/);
