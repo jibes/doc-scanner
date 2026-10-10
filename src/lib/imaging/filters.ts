@@ -76,12 +76,15 @@ const BORDER_BAND = 0.012;
 const INK_CHROMA = 25;
 const INK_PURITY = 0.35;
 /**
- * Faded pages: where the darkest print (the ink level reached over an area of
- * FADED_EXTENT of the long edge squared, a few words) lies between FADED_MIN
+ * Faded pages: where the print (the ink level reached over an area of
+ * FADED_EXTENT of the long edge squared: a few lines of text, so body text
+ * rather than one bold heading, and never a crease) lies between FADED_MIN
  * and FADED_MAX, contrast is stretched so that it lands on FADED_TARGET, by
  * at most FADED_GAIN.
  */
-const FADED_EXTENT = 0.02;
+const FADED_EXTENT = 0.08;
+/** Dark print over this area (fraction of the long edge, squared: a few words) rules out a faded page. */
+const FADED_WORDS = 0.01;
 const FADED_MIN = 0.45;
 const FADED_MAX = 0.85;
 const FADED_TARGET = 0.3;
@@ -241,15 +244,19 @@ function stretchFadedPrint(luma: FloatImage, half: FloatImage, inkLevel: FloatIm
   const hist = new Uint32Array(256);
   const d = inkLevel.data;
   for (let i = 0; i < d.length; i++) hist[Math.max(0, Math.min(255, Math.round(d[i] * 255)))]++;
-  let acc = 0;
-  let level = 1;
-  for (let i = 0; i < 256; i++) {
-    acc += hist[i];
-    if (acc >= Math.max(16, (FADED_EXTENT * Math.max(inkLevel.width, inkLevel.height)) ** 2)) {
-      level = i / 255;
-      break;
+  const long = Math.max(inkLevel.width, inkLevel.height);
+  // The ink level reached over an area of `extent` of the long edge squared.
+  const levelOver = (extent: number) => {
+    const target = Math.max(16, (extent * long) ** 2);
+    for (let i = 0, acc = 0; i < 256; i++) {
+      acc += hist[i];
+      if (acc >= target) return i / 255;
     }
-  }
+    return 1;
+  };
+  // Any dark print at all (a few dark words) and the page is not faded.
+  if (levelOver(FADED_WORDS) <= FADED_MIN) return;
+  const level = levelOver(FADED_EXTENT);
   if (level <= FADED_MIN || level >= FADED_MAX) return;
   const gain = Math.min(FADED_GAIN, (1 - FADED_TARGET) / (1 - level));
   for (const field of [luma.data, half.data, d]) {

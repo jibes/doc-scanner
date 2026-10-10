@@ -221,7 +221,7 @@ const PAPER_MIN_SHARE = 0.02;
 /** Largest colour difference (relative) between a shadowed area and the paper. */
 const SHADOW_TINT = 0.08;
 /** Largest relative spread of brightness within a shadowed area. */
-const SHADOW_SPREAD = 0.2;
+const SHADOW_SPREAD = 0.5;
 /** Smoothing window for the paper model regions are compared against (fraction of the long edge). */
 const MODEL_WINDOW = 0.05;
 /** Width of the border strip in which a region is taken for a grazed table edge. */
@@ -301,7 +301,11 @@ export function pushPull(
   return planes;
 }
 
-/** Mean of `planes` over a window, counting only pixels with `mask` set; holes filled by push-pull. */
+/**
+ * Mean of `planes` over a window, counting only pixels with `mask` set; holes
+ * filled by push-pull. The result is smooth on the scale of `radius`, so it is
+ * computed on a grid a quarter of the radius apart and interpolated back.
+ */
 function maskedSmooth(
   planes: Float32Array<ArrayBuffer>[],
   mask: Uint8Array,
@@ -309,19 +313,50 @@ function maskedSmooth(
   height: number,
   radius: number,
 ): Float32Array<ArrayBuffer>[] {
-  const m = createFloat(width, height);
-  for (let i = 0; i < mask.length; i++) m.data[i] = mask[i];
-  const weight = boxMean(m, radius).data;
-  const out = planes.map((plane) => {
-    const v = createFloat(width, height);
-    for (let i = 0; i < mask.length; i++) v.data[i] = mask[i] ? plane[i] : 0;
-    const sum = boxMean(v, radius).data;
-    for (let i = 0; i < sum.length; i++) sum[i] = weight[i] > 1e-3 ? sum[i] / weight[i] : 0;
+  const step = Math.max(1, Math.round(radius / 4));
+  const cw = Math.ceil(width / step);
+  const ch = Math.ceil(height / step);
+  const count = createFloat(cw, ch);
+  const sums = planes.map(() => createFloat(cw, ch));
+  for (let y = 0; y < height; y++) {
+    const row = Math.floor(y / step) * cw;
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (!mask[i]) continue;
+      const k = row + Math.floor(x / step);
+      count.data[k]++;
+      for (let c = 0; c < planes.length; c++) sums[c].data[k] += planes[c][i];
+    }
+  }
+  const r = Math.max(1, Math.round(radius / step));
+  const weight = boxMean(count, r).data;
+  const coarse = sums.map((plane) => {
+    const sum = boxMean(plane, r).data;
+    for (let k = 0; k < sum.length; k++) sum[k] = weight[k] > 1e-3 ? sum[k] / weight[k] : 0;
     return sum;
   });
-  const w = new Float32Array(weight.length);
-  for (let i = 0; i < w.length; i++) w[i] = weight[i] > 1e-3 ? 1 : 0;
-  return pushPull(out, w, width, height);
+  const known = new Float32Array(weight.length);
+  for (let k = 0; k < known.length; k++) known[k] = weight[k] > 1e-3 ? 1 : 0;
+  pushPull(coarse, known, cw, ch);
+  return coarse.map((plane) => {
+    const out = new Float32Array(width * height);
+    for (let y = 0; y < height; y++) {
+      const gy = Math.min(ch - 1, Math.max(0, (y + 0.5) / step - 0.5));
+      const y0 = Math.floor(gy);
+      const y1 = Math.min(ch - 1, y0 + 1);
+      const ty = gy - y0;
+      for (let x = 0; x < width; x++) {
+        const gx = Math.min(cw - 1, Math.max(0, (x + 0.5) / step - 0.5));
+        const x0 = Math.floor(gx);
+        const x1 = Math.min(cw - 1, x0 + 1);
+        const tx = gx - x0;
+        out[y * width + x] =
+          (plane[y0 * cw + x0] * (1 - tx) + plane[y0 * cw + x1] * tx) * (1 - ty) +
+          (plane[y1 * cw + x0] * (1 - tx) + plane[y1 * cw + x1] * tx) * ty;
+      }
+    }
+    return out;
+  });
 }
 
 /**
@@ -403,7 +438,9 @@ export function analysePaper(src: RGBAImage): PaperAnalysis {
   for (let i = 0; i < n; i++) open[i] ^= 1;
   const { labels, areas } = labelComponents(open, w, h);
 
-  // Per region: mean colour and fine texture (how much neighbouring pixels differ).
+  // Per region: mean colour and fine texture (how much neighbouring pixels
+  // differ, in absolute terms: sensor noise does not shrink in a shadow, so
+  // relative to the darker paper there it would look rougher than it is).
   const m0 = areas.length;
   const sums = new Float64Array(m0 * 3);
   const rough = new Float64Array(m0);
@@ -418,7 +455,7 @@ export function analysePaper(src: RGBAImage): PaperAnalysis {
       sums[l * 3 + 2] += closed[2][i];
       if (x + 1 < w && y + 1 < h && labels[i + 1] === l && labels[i + w] === l) {
         const v = L(i);
-        rough[l] += (Math.abs(L(i + 1) - v) + Math.abs(L(i + w) - v)) / Math.max(8, v);
+        rough[l] += Math.abs(L(i + 1) - v) + Math.abs(L(i + w) - v);
       }
     }
   }
@@ -478,7 +515,7 @@ export function analysePaper(src: RGBAImage): PaperAnalysis {
       if (l === paperLabel || areas[l] < n * PAPER_MIN_SHARE * 0.25) continue;
       const q = lumaSum[l] / areas[l];
       const spread = Math.sqrt(Math.max(0, luma2Sum[l] / areas[l] - q * q)) / Math.max(0.05, q);
-      const smooth = rough[l] / areas[l] < Math.max(0.02, 2.5 * paperRough);
+      const smooth = rough[l] / areas[l] < Math.max(2, 2.5 * paperRough);
       if (
         q > 0.2 &&
         q < 0.92 &&
