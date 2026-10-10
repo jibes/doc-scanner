@@ -114,7 +114,8 @@ export function refineQuad(gray: FloatImage, quad: Quad): Quad {
       for (let s = -steps; s <= steps; s++) {
         profile[s + steps] = sample(gray, ox + nx * s, oy + ny * s);
       }
-      let best = -1;
+      // -1 is a real offset, so "nothing found" is a zero score, not a position.
+      let best = 0;
       let bestScore = 0;
       for (let s = -steps + 1; s < steps; s++) {
         // Central difference across the normal, any polarity, gently
@@ -126,7 +127,7 @@ export function refineQuad(gray: FloatImage, quad: Quad): Quad {
           best = s;
         }
       }
-      if (best === -1 || bestScore < 0.02) continue;
+      if (bestScore < 0.02) continue;
       // Parabolic sub-pixel peak.
       const g = (s: number) => Math.abs(profile[s + steps + 1] - profile[s + steps - 1]);
       let offset = 0;
