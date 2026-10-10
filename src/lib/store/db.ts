@@ -36,54 +36,140 @@ const HISTORY = 'history';
 /** PDFs are kept for this many recent history entries. */
 const KEEP_PDFS = 15;
 
-let opening: Promise<IDBDatabase> | null = null;
+let connection: Promise<IDBDatabase> | null = null;
 
-/** If storage does not answer within this time, carry on without it. */
+/** If storage does not answer within this time, reads carry on without it. */
 const OPEN_TIMEOUT_MS = 4000;
 
-function open(): Promise<IDBDatabase> {
-  opening ??= new Promise((resolve, reject) => {
-    // Opening can stall indefinitely (another tab holding an old version
-    // open, a pending delete). The app must still start.
-    const timer = setTimeout(() => reject(new Error('Storage did not respond')), OPEN_TIMEOUT_MS);
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = (event) => {
-      const db = request.result;
-      if (event.oldVersion < 1) {
-        db.createObjectStore(STORE, { keyPath: 'id' });
-        db.createObjectStore(META);
-      }
-      if (event.oldVersion < 2) db.createObjectStore(HISTORY, { keyPath: 'id' });
+/** Open requests made before giving up on a connection that never answers. */
+const OPEN_ATTEMPTS = 3;
+
+/**
+ * The shared connection, opened on first use. Opening can stall: another tab
+ * holding an old version open blocks it until that tab closes, and WebKit
+ * sometimes never answers an open at all. So the request is kept (a late
+ * success still serves the calls waiting on it, writes included), and if
+ * nothing answers within OPEN_TIMEOUT_MS another request is made alongside;
+ * the first to succeed wins and the others are closed.
+ */
+function connect(): Promise<IDBDatabase> {
+  if (connection) return connection;
+  const current: Promise<IDBDatabase> = new Promise((resolve, reject) => {
+    let settled = false;
+    let attempts = 0;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const attempt = () => {
+      attempts++;
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = (event) => {
+        const db = request.result;
+        if (event.oldVersion < 1) {
+          db.createObjectStore(STORE, { keyPath: 'id' });
+          db.createObjectStore(META);
+        }
+        if (event.oldVersion < 2) db.createObjectStore(HISTORY, { keyPath: 'id' });
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        if (settled) {
+          db.close();
+          return;
+        }
+        settled = true;
+        clearTimeout(retry);
+        // The browser can drop the connection (iOS does after the app has
+        // been in the background); another tab may need to upgrade the
+        // schema. Either way, open a new one next time.
+        db.onclose = () => forget(current);
+        db.onversionchange = () => {
+          db.close();
+          forget(current);
+        };
+        resolve(db);
+      };
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(retry);
+        reject(request.error);
+      };
+      if (attempts < OPEN_ATTEMPTS) retry = setTimeout(attempt, OPEN_TIMEOUT_MS);
     };
-    request.onsuccess = () => {
-      clearTimeout(timer);
-      resolve(request.result);
-    };
-    request.onerror = () => {
-      clearTimeout(timer);
-      reject(request.error);
-    };
+    attempt();
   });
   // A failed open is retried next time rather than cached forever.
-  opening.catch(() => (opening = null));
-  return opening;
+  current.catch(() => forget(current));
+  connection = current;
+  return current;
 }
 
-function run<T>(
+function forget(stale: Promise<IDBDatabase>): void {
+  if (connection === stale) connection = null;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Storage did not respond')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+/** Errors meaning the connection itself is gone, not that the request was bad. */
+function connectionLost(error: unknown): boolean {
+  return (
+    error instanceof DOMException &&
+    (error.name === 'InvalidStateError' || error.name === 'UnknownError')
+  );
+}
+
+function attempt<T>(
+  db: IDBDatabase,
   store: string,
   mode: IDBTransactionMode,
   action: (s: IDBObjectStore) => IDBRequest<T> | void,
 ): Promise<T | undefined> {
-  return open().then(
-    (db) =>
-      new Promise<T | undefined>((resolve, reject) => {
-        const tx = db.transaction(store, mode);
-        const request = action(tx.objectStore(store));
-        tx.oncomplete = () => resolve(request ? request.result : undefined);
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error);
-      }),
-  );
+  return new Promise<T | undefined>((resolve, reject) => {
+    const tx = db.transaction(store, mode);
+    const request = action(tx.objectStore(store));
+    tx.oncomplete = () => resolve(request ? request.result : undefined);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+/**
+ * Run one request in its own transaction. Reads give up after
+ * OPEN_TIMEOUT_MS so the app can start; writes wait for storage, so they
+ * land once a slow open finishes. A lost connection is reopened once (every
+ * action here is idempotent, so repeating it is safe).
+ */
+async function run<T>(
+  store: string,
+  mode: IDBTransactionMode,
+  action: (s: IDBObjectStore) => IDBRequest<T> | void,
+  timeoutMs = mode === 'readonly' ? OPEN_TIMEOUT_MS : Infinity,
+): Promise<T | undefined> {
+  const bounded = (pending: Promise<IDBDatabase>) =>
+    Number.isFinite(timeoutMs) ? withTimeout(pending, timeoutMs) : pending;
+  const opened = connect();
+  const db = await bounded(opened);
+  try {
+    return await attempt(db, store, mode, action);
+  } catch (error) {
+    if (!connectionLost(error)) throw error;
+    forget(opened);
+    db.close();
+    return attempt(await bounded(connect()), store, mode, action);
+  }
 }
 
 /*
@@ -91,20 +177,32 @@ function run<T>(
  * not stop a scan, it only means the session will not survive a reload.
  */
 
-export async function loadPages(): Promise<StoredPage[]> {
+/**
+ * The saved pages in order, or null if storage could not be read (as opposed
+ * to there being none). With `wait`, waits for a slow open to finish.
+ */
+export async function loadPages(wait = false): Promise<StoredPage[] | null> {
   try {
-    const pages = (await run<StoredPage[]>(STORE, 'readonly', (s) => s.getAll())) ?? [];
+    const pages =
+      (await run<StoredPage[]>(
+        STORE,
+        'readonly',
+        (s) => s.getAll(),
+        wait ? Infinity : OPEN_TIMEOUT_MS,
+      )) ?? [];
     return pages.sort((a, b) => a.order - b.order);
   } catch {
-    return [];
+    return null;
   }
 }
 
-export async function putPage(page: StoredPage): Promise<void> {
+/** Returns false if the page could not be saved. */
+export async function putPage(page: StoredPage): Promise<boolean> {
   try {
     await run(STORE, 'readwrite', (s) => s.put(page));
+    return true;
   } catch {
-    // See above.
+    return false;
   }
 }
 
@@ -116,6 +214,10 @@ export async function deletePage(id: string): Promise<void> {
   }
 }
 
+export async function deletePages(ids: string[]): Promise<void> {
+  for (const id of ids) await deletePage(id);
+}
+
 export async function clearPages(): Promise<void> {
   try {
     await run(STORE, 'readwrite', (s) => s.clear());
@@ -124,9 +226,16 @@ export async function clearPages(): Promise<void> {
   }
 }
 
-export async function loadTitle(): Promise<string> {
+export async function loadTitle(wait = false): Promise<string> {
   try {
-    return (await run<string>(META, 'readonly', (s) => s.get('title'))) ?? '';
+    return (
+      (await run<string>(
+        META,
+        'readonly',
+        (s) => s.get('title'),
+        wait ? Infinity : OPEN_TIMEOUT_MS,
+      )) ?? ''
+    );
   } catch {
     return '';
   }
@@ -178,4 +287,15 @@ export async function deleteHistory(id: string): Promise<void> {
   } catch {
     // See above.
   }
+}
+
+/**
+ * Ask the browser not to evict our data under storage pressure (Safari
+ * otherwise may after 7 days without a visit). Best effort, asked once.
+ */
+let persistRequested = false;
+export function requestPersistence(): void {
+  if (persistRequested) return;
+  persistRequested = true;
+  void navigator.storage?.persist?.().catch(() => false);
 }

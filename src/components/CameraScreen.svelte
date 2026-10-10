@@ -62,6 +62,8 @@
   let torchAvailable = $state(false);
   let torchOn = $state(false);
   let detectorState = $state<'loading' | 'ready' | 'failed'>('loading');
+  /** One client per visit: a detector that dies is retried next time the camera opens. */
+  const pageDetector = detector();
   let quad = $state.raw<Quad | null>(null);
   let steady = $state(0);
   let capturing = $state(false);
@@ -128,8 +130,8 @@
 
   onMount(() => {
     void startCamera();
-    detector()
-      .ready.then(() => (detectorState = 'ready'))
+    pageDetector.ready
+      .then(() => (detectorState = 'ready'))
       .catch(() => (detectorState = 'failed'));
     void detectLoop();
     let frame = requestAnimationFrame(function animate(time) {
@@ -239,7 +241,7 @@
   }
 
   async function detectLoop() {
-    await detector().ready.catch(() => undefined);
+    await pageDetector.ready.catch(() => undefined);
     const canvas = document.createElement('canvas');
     canvas.width = MODEL_INPUT;
     canvas.height = MODEL_INPUT;
@@ -265,9 +267,15 @@
         if (probe && frames++ % 8 === 0) measureLight(probe, video);
         ctx?.drawImage(video, 0, 0, MODEL_INPUT, MODEL_INPUT);
         const bitmap = await createImageBitmap(canvas);
-        const { detection } = await detector().frame(bitmap);
+        const { detection } = await pageDetector.frame(bitmap);
         if (running && !capturing) onDetection(detection);
       } catch {
+        if (pageDetector.dead) {
+          detectorState = 'failed';
+          raw = null;
+          quad = null;
+          steady = 0;
+        }
         await new Promise((r) => setTimeout(r, 300));
       }
       // Leave the main thread some air on slow phones.
@@ -281,8 +289,9 @@
   async function addPhoto(source: Blob): Promise<{ id: string; found: boolean; blurred: boolean }> {
     let result: { quad: Quad | null; width: number; height: number; sharpness: number | null };
     try {
-      result = await detector().still(source);
+      result = await pageDetector.still(source);
     } catch {
+      if (pageDetector.dead) detectorState = 'failed';
       const bitmap = await createImageBitmap(source);
       result = { quad: null, width: bitmap.width, height: bitmap.height, sharpness: null };
       bitmap.close();

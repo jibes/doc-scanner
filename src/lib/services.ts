@@ -5,15 +5,19 @@ import type { RenderJob } from './worker/protocol';
 let processorInstance: ProcessorClient | null = null;
 let detectorInstance: DetectorClient | null = null;
 
-/** The image-processing worker, created on first use. */
+/** The image-processing worker, created on first use and again after a failure. */
 export function processor(): ProcessorClient {
-  processorInstance ??= new ProcessorClient();
+  if (!processorInstance || processorInstance.dead) processorInstance = new ProcessorClient();
   return processorInstance;
 }
 
-/** The page detector (ONNX model) worker, created on first use. */
+/**
+ * The page detector (ONNX model) worker, created on first use and again after
+ * a failure. Hold on to the returned client rather than calling this per
+ * frame, so a detector that keeps failing is not restarted in a loop.
+ */
 export function detector(): DetectorClient {
-  detectorInstance ??= new DetectorClient();
+  if (!detectorInstance || detectorInstance.dead) detectorInstance = new DetectorClient();
   return detectorInstance;
 }
 

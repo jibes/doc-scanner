@@ -1,11 +1,14 @@
 import type { Quad } from '../imaging/image';
 import type { PageSpec } from '../pipeline';
+import { toast } from '../ui.svelte';
 import {
   clearPages,
   deletePage,
+  deletePages,
   loadPages,
   loadTitle,
   putPage,
+  requestPersistence,
   saveTitle,
   type StoredPage,
 } from './db';
@@ -26,6 +29,18 @@ function newId(): string {
   return crypto.randomUUID();
 }
 
+function fromStored(stored: StoredPage): Page {
+  return {
+    id: stored.id,
+    source: stored.source,
+    width: stored.width,
+    height: stored.height,
+    spec: stored.spec,
+    detected: stored.detected,
+    sharpness: stored.sharpness ?? null,
+  };
+}
+
 /**
  * The document being scanned. Pages are replaced, never mutated, so `$state.raw`
  * is enough and the Blobs are never wrapped in proxies.
@@ -34,25 +49,53 @@ class Session {
   pages = $state.raw<Page[]>([]);
   title = $state('');
   loaded = $state(false);
+  /** Whether `pages` reflects what was saved; until then other saved pages may exist. */
+  private restored = false;
+  private warnedUnsaved = false;
 
   async restore(): Promise<void> {
     const [stored, title] = await Promise.all([loadPages(), loadTitle()]);
-    this.pages = stored.map((stored) => ({
-      id: stored.id,
-      source: stored.source,
-      width: stored.width,
-      height: stored.height,
-      spec: stored.spec,
-      detected: stored.detected,
-      sharpness: stored.sharpness ?? null,
-    }));
-    this.title = title;
+    if (stored) {
+      this.pages = stored.map(fromStored);
+      this.title = title;
+      this.restored = true;
+    } else {
+      void this.recover();
+    }
     this.loaded = true;
+  }
+
+  /**
+   * Storage was too slow to answer at startup, so the app started empty.
+   * Wait for it, then put the saved pages back in front of any new ones
+   * instead of mixing the two in storage.
+   */
+  private async recover(): Promise<void> {
+    const stored = await loadPages(true);
+    if (!stored) return;
+    const saved = stored.filter((p) => !this.get(p.id)).map(fromStored);
+    this.restored = true;
+    if (saved.length > 0) {
+      this.pages = [...saved, ...this.pages];
+      this.persistOrder();
+      toast(
+        saved.length === 1
+          ? 'Restored 1 page from your last session.'
+          : `Restored ${saved.length} pages from your last session.`,
+        'info',
+      );
+    }
+    const title = await loadTitle(true);
+    if (!this.title) this.title = title;
   }
 
   private persist(page: Page): void {
     const order = this.pages.findIndex((p) => p.id === page.id);
-    void putPage({ ...page, order } satisfies StoredPage);
+    void putPage({ ...page, order } satisfies StoredPage).then((saved) => {
+      if (saved || this.warnedUnsaved) return;
+      this.warnedUnsaved = true;
+      toast('Pages are not being saved on this device. Export them before closing the app.', 'err');
+    });
   }
 
   private persistOrder(): void {
@@ -63,6 +106,7 @@ class Session {
     const created: Page = { ...page, id: newId() };
     this.pages = [...this.pages, created];
     this.persist(created);
+    requestPersistence();
     return created;
   }
 
@@ -154,9 +198,11 @@ class Session {
   }
 
   clear(): void {
+    // Saved pages that were never restored were never seen: keep them.
+    if (this.restored) void clearPages();
+    else void deletePages(this.pages.map((p) => p.id));
     this.pages = [];
     this.title = '';
-    void clearPages();
     void saveTitle('');
   }
 }

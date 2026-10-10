@@ -17,7 +17,10 @@ export default defineConfig({
   plugins: [
     svelte(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // An update waits until every tab of the app is closed. Taking over a
+      // running tab would delete the old precache under it, and the workers
+      // it has yet to start (export, OCR) would then 404.
+      registerType: 'prompt',
       manifest: {
         name: 'Doc Scanner',
         short_name: 'Scanner',
