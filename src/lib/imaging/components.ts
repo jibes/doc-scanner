@@ -98,16 +98,22 @@ export function dilate(mask: Uint8Array, width: number, height: number, radius =
       if (last - x <= r) tmp[off + x] = 1;
     }
   }
-  for (let x = 0; x < width; x++) {
-    let last = -Infinity;
-    for (let y = 0; y < height; y++) {
-      if (tmp[y * width + x]) last = y;
-      if (y - last <= r) out[y * width + x] = 1;
+  // Vertically, the same scans for all columns at once, a row at a time, so
+  // memory is read in order rather than a row apart per step.
+  const last = new Float64Array(width).fill(-Infinity);
+  for (let y = 0; y < height; y++) {
+    const off = y * width;
+    for (let x = 0; x < width; x++) {
+      if (tmp[off + x]) last[x] = y;
+      if (y - last[x] <= r) out[off + x] = 1;
     }
-    last = Infinity;
-    for (let y = height - 1; y >= 0; y--) {
-      if (tmp[y * width + x]) last = y;
-      if (last - y <= r) out[y * width + x] = 1;
+  }
+  last.fill(Infinity);
+  for (let y = height - 1; y >= 0; y--) {
+    const off = y * width;
+    for (let x = 0; x < width; x++) {
+      if (tmp[off + x]) last[x] = y;
+      if (last[x] - y <= r) out[off + x] = 1;
     }
   }
   return out;

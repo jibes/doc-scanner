@@ -23,8 +23,21 @@ interface Decoded {
   /** Decoded pixels per source pixel. */
   scale: number;
 }
+/**
+ * A rectified page and what the filter needs to know about its decode. Not
+ * the decode itself: that would keep up to MAX_RECTIFIED full decodes alive
+ * past the MAX_SOURCES limit.
+ */
+interface Rectified {
+  page: RGBAImage;
+  blob: Blob;
+  /** Decoded pixels per source pixel. */
+  scale: number;
+  /** Size of the decoded image. */
+  decodedSize: { width: number; height: number };
+}
 const sources = new Map<string, Decoded>();
-const rectified = new Map<string, { page: RGBAImage; decoded: Decoded }>();
+const rectified = new Map<string, Rectified>();
 const MAX_SOURCES = 3;
 const MAX_RECTIFIED = 4;
 
@@ -56,23 +69,29 @@ async function getSource(job: RenderJob, cache = true): Promise<Decoded> {
     options.resizeQuality = 'high';
   }
   const bitmap = await createImageBitmap(job.source, options);
+  const { width, height } = bitmap;
+  // The bitmap and the canvas each hold another full copy of the pixels: let
+  // each go as soon as it has been read, not when the GC gets round to it.
+  const canvas = new OffscreenCanvas(width, height);
+  let data: Uint8ClampedArray<ArrayBuffer>;
   try {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('Could not create a 2D canvas context');
     ctx.drawImage(bitmap, 0, 0);
-    const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
-    // Browsers without resize support decode at full size; measure, don't assume.
-    const decoded: Decoded = {
-      blob: job.source,
-      image: { data, width: bitmap.width, height: bitmap.height },
-      scale: bitmap.width / job.sourceWidth,
-    };
-    if (cache) touch(sources, key, decoded, MAX_SOURCES);
-    return decoded;
+    bitmap.close();
+    data = ctx.getImageData(0, 0, width, height).data;
   } finally {
     bitmap.close();
+    canvas.width = canvas.height = 0;
   }
+  // Browsers without resize support decode at full size; measure, don't assume.
+  const decoded: Decoded = {
+    blob: job.source,
+    image: { data, width, height },
+    scale: width / job.sourceWidth,
+  };
+  if (cache) touch(sources, key, decoded, MAX_SOURCES);
+  return decoded;
 }
 
 /** The page spec in the decoded image's pixel coordinates. */
@@ -80,24 +99,22 @@ function scaledSpec(spec: PageSpec, scale: number): PageSpec {
   return scale === 1 ? spec : { ...spec, quad: scaleQuad(spec.quad, scale) };
 }
 
-async function getRectified(
-  job: RenderJob,
-  cache: boolean,
-): Promise<{ page: RGBAImage; decoded: Decoded }> {
+async function getRectified(job: RenderJob, cache: boolean): Promise<Rectified> {
   const { spec } = job;
   const key = `${job.pageId}|${spec.quad
     .flat()
     .map((v) => v.toFixed(2))
     .join(',')}|${spec.rotation}|${job.longEdge}`;
   const hit = rectified.get(key);
-  if (hit && hit.decoded.blob === job.source) {
+  if (hit && hit.blob === job.source) {
     touch(rectified, key, hit, MAX_RECTIFIED);
     return hit;
   }
   // A full-size decode for a one-off export render is not worth keeping.
   const decoded = await getSource(job, cache);
   const page = rectifyPage(decoded.image, scaledSpec(spec, decoded.scale), job.longEdge);
-  const entry = { page, decoded };
+  const { width, height } = decoded.image;
+  const entry = { page, blob: job.source, scale: decoded.scale, decodedSize: { width, height } };
   if (cache) touch(rectified, key, entry, MAX_RECTIFIED);
   return entry;
 }
@@ -137,6 +154,7 @@ async function encodeForPdf(
     if (!ctx) throw new Error('Could not create a 2D canvas context');
     ctx.putImageData(rgbaToImageData(image), 0, 0);
     const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality });
+    canvas.width = canvas.height = 0;
     return { kind: 'jpeg', bytes: new Uint8Array(await blob.arrayBuffer()), components: 3 };
   }
 
@@ -163,6 +181,8 @@ async function encodeForPdf(
     : { kind: 'flate', bytes: plain, components: channels, predictor: false };
 }
 
+/** Jobs waiting in the queue, and those of them cancelled before starting. */
+const queued = new Set<number>();
 const cancelled = new Set<number>();
 
 async function handle(request: ProcessorRequest): Promise<void> {
@@ -178,25 +198,29 @@ async function handle(request: ProcessorRequest): Promise<void> {
   }
 
   const { id } = request;
+  queued.delete(id);
   if (cancelled.delete(id)) {
     self.postMessage({ type: 'error', id, message: 'cancelled' });
     return;
   }
   try {
     // Export renders are one-off and large; caching them would only pin memory.
-    const { page, decoded } = await getRectified(request, request.type !== 'encode');
+    let entry: Rectified | null = await getRectified(request, request.type !== 'encode');
     if (request.type === 'rectified') {
-      const bitmap = await toBitmap(page);
+      const bitmap = await toBitmap(entry.page);
       self.postMessage({ type: 'bitmap', id, bitmap }, [bitmap]);
       return;
     }
-    const spec = scaledSpec(request.spec, decoded.scale);
+    const spec = scaledSpec(request.spec, entry.scale);
     const result = applyFilter(
-      page,
+      entry.page,
       spec.filter,
       spec.adjustments,
-      filterContext(spec.quad, request.longEdge, decoded.image),
+      filterContext(spec.quad, request.longEdge, entry.decodedSize),
     );
+    // An uncached export page is garbage from here on; don't hold it through
+    // encoding.
+    entry = null;
     if (request.type === 'render') {
       const bitmap = await toBitmap(result);
       self.postMessage({ type: 'bitmap', id, bitmap }, [bitmap]);
@@ -233,8 +257,11 @@ let queue: Promise<void> = Promise.resolve();
 self.onmessage = (event) => {
   const request = event.data;
   if (request.type === 'cancel') {
-    cancelled.add(request.id);
+    // A job already running or done cannot be skipped any more, and noting
+    // its id would only grow the set forever.
+    if (queued.has(request.id)) cancelled.add(request.id);
     return;
   }
+  if (request.type !== 'forget') queued.add(request.id);
   queue = queue.then(() => handle(request));
 };

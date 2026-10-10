@@ -59,6 +59,40 @@ describe('warpQuad', () => {
     );
     for (let x = 2; x < 98; x++) expect(Math.abs(px(out, x, 5)[0] - 127.5)).toBeLessThan(4);
   });
+
+  it('antialiases a shrink along one axis only', () => {
+    // Every third column black, shrunk 3x across but not down: point samples
+    // would land on the same phase every time and come out all black.
+    const src = fill(300, 40, [255, 255, 255]);
+    for (let x = 1; x < 300; x += 3) setRect(src, x, 0, x + 1, 40, [0, 0, 0]);
+    const out = warpQuad(
+      src,
+      [
+        [0, 0],
+        [300, 0],
+        [300, 40],
+        [0, 40],
+      ],
+      100,
+      40,
+    );
+    for (let x = 2; x < 98; x++) expect(Math.abs(px(out, x, 20)[0] - 170)).toBeLessThan(4);
+    // The same page on its side: the shrink is along the source's y axis.
+    const turned = fill(40, 300, [255, 255, 255]);
+    for (let y = 1; y < 300; y += 3) setRect(turned, 0, y, 40, y + 1, [0, 0, 0]);
+    const side = warpQuad(
+      turned,
+      [
+        [0, 300],
+        [0, 0],
+        [40, 0],
+        [40, 300],
+      ],
+      100,
+      40,
+    );
+    for (let x = 2; x < 98; x++) expect(Math.abs(px(side, x, 20)[0] - 170)).toBeLessThan(4);
+  });
 });
 
 describe('rotateRGBA', () => {

@@ -78,18 +78,22 @@ export function rotateRGBA(image: RGBAImage, quarterTurns: number): RGBAImage {
   return out;
 }
 
-/** Average `factor x factor` blocks. Partial edge blocks average what exists. */
-export function downsampleBox(image: RGBAImage, factor: number): RGBAImage {
+/**
+ * Average `factor x factorY` blocks (square unless `factorY` is given).
+ * Partial edge blocks average what exists.
+ */
+export function downsampleBox(image: RGBAImage, factor: number, factorY = factor): RGBAImage {
   const f = Math.max(1, Math.floor(factor));
-  if (f === 1) return image;
+  const fy = Math.max(1, Math.floor(factorY));
+  if (f === 1 && fy === 1) return image;
   const width = Math.max(1, Math.ceil(image.width / f));
-  const height = Math.max(1, Math.ceil(image.height / f));
+  const height = Math.max(1, Math.ceil(image.height / fy));
   const out = createRGBA(width, height);
   const sd = image.data;
   const sw = image.width;
   for (let y = 0; y < height; y++) {
-    const y0 = y * f;
-    const y1 = Math.min(image.height, y0 + f);
+    const y0 = y * fy;
+    const y1 = Math.min(image.height, y0 + fy);
     for (let x = 0; x < width; x++) {
       const x0 = x * f;
       const x1 = Math.min(sw, x0 + f);

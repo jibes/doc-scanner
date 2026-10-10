@@ -49,6 +49,25 @@ describe('heatmapsToQuad', () => {
     expect(result.quad[0][0]).toBeCloseTo(0.2, 2);
   });
 
+  it('takes confidence from the chosen blob, not a stray hotter spot', () => {
+    const heat = heatmaps(
+      [
+        [0.2, 0.2],
+        [0.8, 0.2],
+        [0.8, 0.8],
+        [0.2, 0.8],
+      ],
+      128,
+      0.6,
+    );
+    // One very hot cell in the TL channel, too small to be the chosen blob.
+    heat[64 * 128 + 64] = 0.99;
+    const result = heatmapsToQuad(heat, 128)!;
+    expect(result.quad[0][0]).toBeCloseTo(0.2, 2);
+    expect(result.confidence).toBeLessThan(0.61);
+    expect(result.confidence).toBeGreaterThan(0.5);
+  });
+
   it('returns null when a corner is missing or the quad is degenerate', () => {
     const heat = heatmaps([
       [0.2, 0.2],

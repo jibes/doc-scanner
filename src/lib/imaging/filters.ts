@@ -187,8 +187,8 @@ function inkCoverage(
   // A whisker of smoothing at the scale of the camera's noise straightens the
   // wobble that JPEG blocks and sensor noise put into glyph outlines; the
   // ramp below re-sharpens every edge, so nothing ends up soft.
-  const base = toLuma(flat);
-  const luma = gaussian(base, 0.45 * Math.max(1, ctx.sourceScale) * (1.2 - adj.sharpen));
+  // (No name for the unblurred luma, so it can be freed straight away.)
+  const luma = gaussian(toLuma(flat), 0.45 * Math.max(1, ctx.sourceScale) * (1.2 - adj.sharpen));
   const { width, height } = luma;
   const L = longEdge(luma);
   const inkRadius = Math.max(2, Math.round(L * INK_WINDOW));

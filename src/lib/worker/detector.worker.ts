@@ -124,8 +124,12 @@ async function handle(request: DetectorRequest): Promise<void> {
   try {
     if (request.type === 'frame') {
       const start = performance.now();
-      const detection = await infer(request.frame);
-      request.frame.close();
+      let detection: Detection | null;
+      try {
+        detection = await infer(request.frame);
+      } finally {
+        request.frame.close();
+      }
       self.postMessage({ type: 'frame', id, detection, ms: performance.now() - start });
       return;
     }
