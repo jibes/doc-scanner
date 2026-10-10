@@ -1,9 +1,12 @@
 import type { Detection } from '../detect/heatmap';
 import type { Quad } from '../imaging/image';
 import type { PdfImage } from '../pdf/writer';
+import type { OcrWord } from '../ocr/paddle';
 import type {
   DetectorRequest,
   DetectorResponse,
+  OcrRequest,
+  OcrResponse,
   ProcessorRequest,
   ProcessorResponse,
   RenderJob,
@@ -92,9 +95,12 @@ export class ProcessorClient {
     return response.bitmap;
   }
 
-  async encode(
-    job: RenderJob & { jpegQuality: number },
-  ): Promise<{ image: PdfImage; width: number; height: number }> {
+  async encode(job: RenderJob & { jpegQuality: number; ocrEdge?: number }): Promise<{
+    image: PdfImage;
+    width: number;
+    height: number;
+    ocr?: { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number };
+  }> {
     const response = await this.send({ type: 'encode', ...job });
     if (response.type !== 'encoded') throw new Error('Unexpected worker response');
     return response;
@@ -205,5 +211,49 @@ export class DetectorClient {
 
   dispose(): void {
     this.worker.terminate();
+  }
+}
+
+/* ------------------------------------------------------------------ ocr ---- */
+
+/** On-device OCR (PaddleOCR), loaded on first use. */
+export class OcrClient {
+  private readonly worker = new Worker(new URL('./ocr.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+  private nextId = 1;
+  private pending = new Map<number, Pending<OcrResponse>>();
+
+  constructor() {
+    this.worker.onmessage = (event: MessageEvent<OcrResponse>) => {
+      const message = event.data;
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      this.pending.delete(message.id);
+      if (message.type === 'error') pending.reject(new Error(message.message));
+      else pending.resolve(message);
+    };
+    this.worker.onerror = (event) => {
+      const error = new Error(event.message || 'The OCR worker crashed');
+      for (const pending of this.pending.values()) pending.reject(error);
+      this.pending.clear();
+    };
+  }
+
+  /** Words found in an image, in its pixel coordinates. Takes ownership of `data`. */
+  async recognise(image: {
+    data: Uint8ClampedArray<ArrayBuffer>;
+    width: number;
+    height: number;
+  }): Promise<OcrWord[]> {
+    const id = this.nextId++;
+    const response = await new Promise<OcrResponse>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.worker.postMessage({ type: 'ocr', id, ...image } satisfies OcrRequest, [
+        image.data.buffer,
+      ]);
+    });
+    if (response.type !== 'words') throw new Error('Unexpected OCR response');
+    return response.words;
   }
 }

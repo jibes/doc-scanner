@@ -1,21 +1,48 @@
 <script lang="ts">
-  import { ui } from '../lib/ui.svelte';
+  import { fade, fly } from 'svelte/transition';
+  import { dismissToast, ui } from '../lib/ui.svelte';
 </script>
 
 {#if ui.busy}
-  <div class="busy" role="status" aria-live="polite">
+  <div class="busy" role="status" aria-live="polite" transition:fade={{ duration: 150 }}>
     <div class="spinner"></div>
     <div class="label">{ui.busy.label}</div>
     {#if ui.busy.progress !== null}
       <div class="bar"><div style="width: {Math.round(ui.busy.progress * 100)}%"></div></div>
     {/if}
+    {#if ui.busy.action}
+      {@const action = ui.busy.action}
+      <button class="action" onclick={() => action.run()}>{action.label}</button>
+    {/if}
   </div>
 {/if}
 
 {#if ui.toast}
-  {#key ui.toast.key}
-    <div class="toast {ui.toast.kind}" role="status" aria-live="polite">{ui.toast.message}</div>
-  {/key}
+  <div class="toast-slot">
+    {#key ui.toast.key}
+      <div
+        class="toast {ui.toast.kind}"
+        role="status"
+        aria-live="polite"
+        in:fly={{ y: 12, duration: 180 }}
+        out:fade={{ duration: 120 }}
+      >
+        <span>{ui.toast.message}</span>
+        {#if ui.toast.action}
+          {@const action = ui.toast.action}
+          <button
+            class="toast-action"
+            onclick={() => {
+              action.run();
+              dismissToast();
+            }}
+          >
+            {action.label}
+          </button>
+        {/if}
+      </div>
+    {/key}
+  </div>
 {/if}
 
 <style>
@@ -30,14 +57,17 @@
     gap: 14px;
     background: rgb(0 0 0 / 70%);
     backdrop-filter: blur(6px);
+    color: #fff;
   }
 
   .label {
     font-size: 14px;
+    text-align: center;
+    max-width: 30ch;
   }
 
   .bar {
-    width: 200px;
+    width: 220px;
     height: 4px;
     border-radius: 2px;
     background: rgb(255 255 255 / 15%);
@@ -50,20 +80,39 @@
     transition: width 0.2s ease;
   }
 
-  .toast {
+  .action {
+    margin-top: 6px;
+    background: rgb(255 255 255 / 12%);
+    border-color: rgb(255 255 255 / 25%);
+    color: #fff;
+    font-size: 13px;
+  }
+
+  .toast-slot {
     position: fixed;
-    left: 50%;
+    left: 0;
+    right: 0;
     bottom: calc(96px + var(--safe-bottom));
-    transform: translateX(-50%);
     z-index: 60;
-    max-width: min(92vw, 460px);
-    padding: 11px 16px;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: max-content;
+    max-width: min(92vw, 480px);
+    padding: 10px 10px 10px 16px;
     border-radius: 12px;
     background: var(--panel-3);
+    color: var(--text);
     border: 1px solid var(--border);
-    box-shadow: 0 8px 30px rgb(0 0 0 / 45%);
+    box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
     font-size: 14px;
-    animation: rise 0.18s ease-out;
   }
 
   .toast.good {
@@ -74,10 +123,12 @@
     border-color: rgb(239 68 68 / 60%);
   }
 
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translate(-50%, 8px);
-    }
+  .toast-action {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: transparent;
+    border-color: transparent;
   }
 </style>

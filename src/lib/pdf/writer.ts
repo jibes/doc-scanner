@@ -16,6 +16,16 @@ export interface PdfPage {
   width: number;
   height: number;
   image: PdfImage;
+  /** Recognised words in image pixels, for an invisible, searchable text layer. */
+  words?: PdfWord[];
+}
+
+export interface PdfWord {
+  text: string;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 export interface PdfInfo {
@@ -54,6 +64,67 @@ function pdfDate(d: Date): string {
   );
 }
 
+/**
+ * Helvetica advance widths (1/1000 em) for printable ASCII; anything else is
+ * treated as an average letter. Only a rough natural width is needed: each
+ * word is stretched to its measured width anyway.
+ */
+const HELVETICA =
+  '278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584'
+    .split(',')
+    .map(Number);
+
+function textWidth(text: string): number {
+  let w = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    w += code >= 32 && code <= 126 ? HELVETICA[code - 32] : 556;
+  }
+  return w / 1000;
+}
+
+/**
+ * A PDF string in WinAnsiEncoding, which covers English and Western European
+ * text (umlauts, accents, euro sign). Other characters become '?': the
+ * text layer is for search and copy, and the image shows the real thing.
+ */
+function winAnsi(text: string): string {
+  let out = '(';
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    let byte: number;
+    if (code === 0x20ac) byte = 0x80;
+    else if ((code >= 32 && code <= 126) || (code >= 160 && code <= 255)) byte = code;
+    else byte = 63;
+    if (byte === 40 || byte === 41 || byte === 92) out += `\\${String.fromCharCode(byte)}`;
+    else if (byte < 127) out += String.fromCharCode(byte);
+    else out += `\\${byte.toString(8).padStart(3, '0')}`;
+  }
+  return `${out})`;
+}
+
+/** Content-stream operators drawing the words invisibly (render mode 3). */
+function textLayer(page: PdfPage): string {
+  if (!page.words?.length) return '';
+  const sx = page.width / page.pixelWidth;
+  const sy = page.height / page.pixelHeight;
+  let ops = ' BT 3 Tr';
+  for (const word of page.words) {
+    const natural = textWidth(word.text);
+    const height = (word.y1 - word.y0) * sy;
+    const width = (word.x1 - word.x0) * sx;
+    if (!(natural > 0) || height <= 0 || width <= 0) continue;
+    // Cap height is ~0.72 em; letters fill most of a detected line box.
+    const size = height * 0.75;
+    const scale = (100 * width) / (natural * size);
+    const x = word.x0 * sx;
+    // PDF y runs upwards; put the baseline near the bottom of the box.
+    const y = page.height - (word.y1 * sy - height * 0.2);
+    ops += ` /F0 ${num(size)} Tf ${num(scale)} Tz 1 0 0 1 ${num(x)} ${num(y)} Tm ${winAnsi(word.text)} Tj`;
+  }
+  return `${ops} ET`;
+}
+
 function num(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
@@ -87,8 +158,9 @@ export function buildPdf(pages: PdfPage[], info: PdfInfo = {}): Blob {
     push('\nendobj\n');
   };
 
-  // Object ids: 1 catalog, 2 pages, 3 info, then 3 per page (page, content, image).
-  const pageId = (i: number) => 4 + i * 3;
+  // Object ids: 1 catalog, 2 pages, 3 info, 4 font, then 3 per page (page,
+  // content, image).
+  const pageId = (i: number) => 5 + i * 3;
   // The second line is a comment of high bytes, telling transfer tools the file is binary.
   push(new Uint8Array([...encoder.encode('%PDF-1.7\n%'), 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]));
 
@@ -101,14 +173,17 @@ export function buildPdf(pages: PdfPage[], info: PdfInfo = {}): Blob {
   ];
   if (info.title) infoParts.push(`/Title ${pdfString(info.title)}`);
   object(3, `<< ${infoParts.join(' ')} >>`);
+  object(4, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
 
   pages.forEach((page, i) => {
     const id = pageId(i);
-    const content = encoder.encode(`q ${num(page.width)} 0 0 ${num(page.height)} 0 0 cm /Im0 Do Q`);
+    const content = encoder.encode(
+      `q ${num(page.width)} 0 0 ${num(page.height)} 0 0 cm /Im0 Do Q${textLayer(page)}`,
+    );
     object(
       id,
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${num(page.width)} ${num(page.height)}] ` +
-        `/Resources << /XObject << /Im0 ${id + 2} 0 R >> >> /Contents ${id + 1} 0 R >>`,
+        `/Resources << /XObject << /Im0 ${id + 2} 0 R >> /Font << /F0 4 0 R >> >> /Contents ${id + 1} 0 R >>`,
     );
     object(id + 1, `<< /Length ${content.length} >>`, content);
     const { image } = page;

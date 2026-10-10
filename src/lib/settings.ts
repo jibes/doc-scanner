@@ -11,6 +11,8 @@ export interface AppSettings {
   jpegQuality: number;
   /** A lens picked by hand, or null for automatic selection. */
   cameraDeviceId: string | null;
+  /** Add an invisible OCR text layer to saved and shared PDFs. */
+  ocr: boolean;
 }
 
 /** Long edge of an exported page. ~300 dpi on A4 for 'high'. */
@@ -27,6 +29,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   resolution: 'high',
   jpegQuality: 0.88,
   cameraDeviceId: null,
+  ocr: true,
 };
 
 const KEY = 'doc-scanner.settings.v2';
@@ -58,6 +61,7 @@ export function loadSettings(): AppSettings {
           ? s.jpegQuality
           : DEFAULT_SETTINGS.jpegQuality,
       cameraDeviceId: typeof s.cameraDeviceId === 'string' ? s.cameraDeviceId : null,
+      ocr: typeof s.ocr === 'boolean' ? s.ocr : DEFAULT_SETTINGS.ocr,
     };
   } catch {
     return structuredClone(DEFAULT_SETTINGS);

@@ -3,6 +3,8 @@
   import { isBlurred } from '../lib/imaging/sharpness';
   import { session, type Page } from '../lib/store/session.svelte';
   import { FILTERS } from '../lib/filters';
+  import { haptic } from '../lib/haptics';
+  import { toast } from '../lib/ui.svelte';
   import Icon from './Icon.svelte';
   import PageCanvas from './PageCanvas.svelte';
 
@@ -40,11 +42,65 @@
   }
 
   function remove() {
-    if (!confirm('Delete this page?')) return;
     const neighbour = session.pages[index + 1] ?? session.pages[index - 1];
-    session.remove(page.id);
+    const undo = session.remove(page.id);
+    haptic('tick');
+    toast('Page deleted.', 'info', { label: 'Undo', run: undo });
     if (neighbour) onOpen(neighbour.id);
     else onBack();
+  }
+
+  // Other pages that would change if this page's look were applied to all.
+  const differing = $derived(
+    session.pages.filter(
+      (p) =>
+        p.spec.filter !== filter ||
+        (Object.keys(adj) as (keyof Adjustments)[]).some((k) => p.spec.adjustments[k] !== adj[k]),
+    ).length,
+  );
+
+  function applyToAll() {
+    session.applyToAll({ filter, adjustments: adj });
+    haptic('tick');
+    toast(`Applied to all ${session.pages.length} pages.`, 'good');
+  }
+
+  /* Swipe between pages. */
+  let swipe = $state<{ id: number; x: number; y: number } | null>(null);
+  let dragX = $state(0);
+
+  function swipeStart(event: PointerEvent) {
+    if (swipe || (event.target as Element).closest('button')) return;
+    swipe = { id: event.pointerId, x: event.clientX, y: event.clientY };
+  }
+
+  function swipeMove(event: PointerEvent) {
+    if (swipe?.id !== event.pointerId) return;
+    const dx = event.clientX - swipe.x;
+    const dy = event.clientY - swipe.y;
+    // Resist at the ends of the document.
+    const blocked = (dx > 0 && index <= 0) || (dx < 0 && index >= session.pages.length - 1);
+    dragX = Math.abs(dx) > Math.abs(dy) ? (blocked ? dx * 0.2 : dx) : 0;
+  }
+
+  function swipeEnd(event: PointerEvent) {
+    if (swipe?.id !== event.pointerId) return;
+    const width = (event.currentTarget as HTMLElement).clientWidth;
+    const step = Math.abs(dragX) > Math.min(90, width * 0.22) ? -Math.sign(dragX) : 0;
+    swipe = null;
+    dragX = 0;
+    const next = session.pages[index + step];
+    if (step && next) {
+      haptic('tick');
+      onOpen(next.id);
+    }
+  }
+
+  function keydown(event: KeyboardEvent) {
+    if ((event.target as Element).closest('input, textarea')) return;
+    if (event.key === 'ArrowLeft' && index > 0) onOpen(session.pages[index - 1].id);
+    if (event.key === 'ArrowRight' && index < session.pages.length - 1)
+      onOpen(session.pages[index + 1].id);
   }
 
   const SLIDERS: { key: keyof Adjustments; label: string; min: number; max: number }[] = [
@@ -54,6 +110,8 @@
     { key: 'sharpen', label: 'Sharpen', min: 0, max: 1 },
   ];
 </script>
+
+<svelte:window onkeydown={keydown} />
 
 <section class="screen page">
   <header class="topbar">
@@ -86,25 +144,35 @@
     </div>
   {/if}
 
-  <div class="viewport">
-    {#key page.id}
-      <PageCanvas
-        {page}
-        longEdge={PREVIEW_EDGE}
-        channel="page-preview"
-        class="preview {comparing ? 'hidden' : ''}"
-        onrendering={(r) => (rendering = r)}
-      />
-      {#if comparing}
+  <div
+    class="viewport"
+    role="group"
+    aria-label="Page preview; swipe to change page"
+    onpointerdown={swipeStart}
+    onpointermove={swipeMove}
+    onpointerup={swipeEnd}
+    onpointercancel={swipeEnd}
+  >
+    <div class="slide" class:dragging={swipe !== null} style="transform: translateX({dragX}px)">
+      {#key page.id}
         <PageCanvas
           {page}
           longEdge={PREVIEW_EDGE}
-          channel="page-original"
-          unfiltered
-          class="preview"
+          channel="page-preview"
+          class="preview {comparing ? 'hidden' : ''}"
+          onrendering={(r) => (rendering = r)}
         />
-      {/if}
-    {/key}
+        {#if comparing}
+          <PageCanvas
+            {page}
+            longEdge={PREVIEW_EDGE}
+            channel="page-original"
+            unfiltered
+            class="preview"
+          />
+        {/if}
+      {/key}
+    </div>
     {#if rendering}<div class="working"><div class="spinner"></div></div>{/if}
     <button
       class="compare"
@@ -133,6 +201,12 @@
         </button>
       {/each}
     </div>
+
+    {#if session.pages.length > 1 && differing > 0}
+      <button class="apply-all" onclick={applyToAll}>
+        Apply this filter and adjustments to all pages
+      </button>
+    {/if}
 
     {#if showAdjust}
       <div class="sliders">
@@ -221,6 +295,33 @@
     background: #050506;
   }
 
+  .viewport {
+    touch-action: none;
+    overflow: hidden;
+  }
+
+  .slide {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s ease;
+  }
+
+  .slide.dragging {
+    transition: none;
+  }
+
+  .apply-all {
+    align-self: center;
+    padding: 6px 12px;
+    font-size: 13px;
+    color: var(--accent);
+    background: transparent;
+    border-color: transparent;
+  }
+
   .viewport :global(.preview) {
     max-width: 100%;
     max-height: 100%;
@@ -252,6 +353,7 @@
     background: rgb(0 0 0 / 55%);
     backdrop-filter: blur(8px);
     touch-action: none;
+    color: #fff;
   }
 
   .compare :global(svg) {

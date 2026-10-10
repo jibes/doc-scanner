@@ -121,6 +121,15 @@
           Black-and-white and grey pages are stored losslessly; colour pages use JPEG at this
           quality.
         </p>
+        <label class="toggle">
+          <span>Make saved PDFs searchable</span>
+          <input type="checkbox" bind:checked={draft.ocr} />
+        </label>
+        <p class="help">
+          Reads the text on this device (about 13 MB of models, downloaded once) and adds an
+          invisible text layer so you can search and copy. Uploads to Paperless skip this, as
+          Paperless reads the text itself.
+        </p>
       </div>
       <div class="actions">
         <button type="button" onclick={() => dialog?.close()}>Cancel</button>

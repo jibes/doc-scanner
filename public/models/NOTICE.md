@@ -8,3 +8,14 @@ published by the authors for their `docaligner-docsaid` Python package
 
 Licensed under the Apache License, Version 2.0; see `LICENSE-Apache-2.0.txt`
 in this directory. Copyright DocsaidLab.
+
+# ppocrv5-det.onnx, ppocrv5-latin-rec.onnx, ppocrv5-latin-dict.txt
+
+Text detection and Latin-script text recognition models from **PaddleOCR**
+(PP-OCRv5 mobile; <https://github.com/PaddlePaddle/PaddleOCR>), Copyright
+PaddlePaddle Authors, licensed under the Apache License, Version 2.0 (see
+`LICENSE-Apache-2.0.txt` in this directory). Distributed unmodified in the
+ONNX conversions published at
+<https://huggingface.co/ilaylow/PP_OCRv5_mobile_onnx> (`ppocrv5_det.onnx`) and
+<https://huggingface.co/monkt/paddleocr-onnx> (`languages/latin/rec.onnx`,
+`languages/latin/dict.txt`), both Apache-2.0.

@@ -9,8 +9,9 @@ preview; hold steady and it captures by itself. Every page is cropped to its
 real edges, straightened, and its proportions corrected for the camera angle.
 Then it gets a filter that makes the paper literal `#FFFFFF` and the text
 literal `#000000` without blurring it, while logos, stamps and signatures keep
-their colour. Collect as many pages as you like, then save one PDF or upload it
-to Paperless, which adds the OCR text layer.
+their colour. Collect as many pages as you like, then save one searchable PDF
+(text recognised on the phone) or upload it to Paperless, which runs its own
+OCR.
 
 No backend. The app is static files; your phone talks straight to your own
 Paperless server, and it keeps working offline after the first visit.
@@ -27,6 +28,7 @@ Paperless server, and it keeps working offline after the first visit.
 | Flatten    | A paper-colour surface from a morphological closing (which wipes out ink but keeps the paper's own shading) follows wrinkles, creases and hand shadows; a coarse per-block estimate guards against large dark content. Dividing by it removes shadows and colour casts with no grey halos around text.                                                                         |
 | Filter     | See below.                                                                                                                                                                                                                                                                                                                                                                     |
 | Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                                                                                                                                          |
+| Read       | Optional, for saved PDFs: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) PP-OCRv5 text detection (4.7 MB) and Latin recognition (7.8 MB) in a worker. Words go into an invisible text layer positioned over the image, so the PDF is searchable and copyable. Runs in the background while you review the pages; "Save without text" skips the wait.                   |
 | Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                                                                                                                                                   |
 
 ### Filters that do not blur or fatten
@@ -120,7 +122,25 @@ Camera access needs a secure context: GitHub Pages (HTTPS) and `localhost` work,
 a plain `http://192.168.x.x` does not.
 
 The model (4.8 MB) and the ONNX Runtime WebAssembly binary (14 MB, 3.7 MB
-gzipped) are precached by the service worker on the first visit.
+gzipped) are precached by the service worker on the first visit. The OCR models
+(12.7 MB) are downloaded the first time a searchable PDF is made and cached from
+then on; turn "Make saved PDFs searchable" off in the settings to never fetch
+them.
+
+## Using it
+
+- **Camera:** the outline follows the page; hints say when to move closer or
+  that it is too dark (with a flash shortcut). Each capture confirms with
+  "Page N added".
+- **Document:** press and hold a page to drag it to a new position. A filter
+  chip above the grid applies to every page.
+- **Page:** swipe left or right (or use the arrow keys) to move between pages.
+  "Apply … to all pages" copies this page's filter and adjustments. Deleting a
+  page can be undone from the message that appears.
+- **History:** every saved PDF and upload is listed; the last 15 PDFs are kept
+  on the device to share or upload again.
+- Follows the system light or dark theme; the camera and crop screens stay
+  dark. Reduced-motion settings turn off the animations.
 
 ## Connecting to Paperless-ngx
 
@@ -154,12 +174,14 @@ src/
       refine.ts                 sub-pixel edge snapping
       box.ts components.ts      box/Gaussian filters, connected components
     detect/heatmap.ts           DocAligner heatmaps → corners
+    ocr/paddle.ts               PP-OCRv5 pre/post-processing (DB boxes, CTC decoding)
     pdf/                        PDF writer, PNG predictors, paper size
-    worker/                     detector (ONNX) and processor workers + clients
+    worker/                     detector, OCR (ONNX) and processor workers + clients
     camera/camera.ts            lens selection, torch, full-resolution stills
     store/                      session state, IndexedDB persistence
     paperless.ts export.ts      upload and PDF assembly
-public/models/                  DocAligner model + licence
+    history.ts                  past exports and uploads
+public/models/                  DocAligner and PaddleOCR models + licences
 tests/                          vitest suites, synthetic photo generator
 ```
 
@@ -201,13 +223,18 @@ once.
 - **Threads are off.** GitHub Pages cannot send the cross-origin isolation
   headers that WebAssembly threads need, so the model runs single-threaded.
 
+- **OCR reads Latin script only** (English, German, French, Spanish, …), and
+  the text layer uses the standard Helvetica encoding, so characters outside
+  Windows-1252 are written as `?`. It takes a few seconds per page on a phone.
+
 ## Privacy
 
 Static files only: no analytics, no telemetry, no server of its own. The only
-network requests are loading the app itself and the uploads to the Paperless
-URL you configure.
+network requests are loading the app itself (including the OCR models, from
+the same site) and the uploads to the Paperless URL you configure. Text
+recognition happens on the device.
 
 ## Licence
 
-See `THIRD_PARTY_NOTICES.md` for bundled components. The DocAligner model is
-Apache-2.0. No licence has been chosen for this project's own code yet.
+See `THIRD_PARTY_NOTICES.md` for bundled components. The DocAligner and PaddleOCR
+models are Apache-2.0. No licence has been chosen for this project's own code yet.

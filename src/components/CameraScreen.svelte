@@ -7,6 +7,7 @@
   import type { Point, Quad } from '../lib/imaging/image';
   import { insetQuad } from '../lib/imaging/quad';
   import { isBlurred } from '../lib/imaging/sharpness';
+  import { haptic } from '../lib/haptics';
   import { defaultSpec } from '../lib/pipeline';
   import { detector } from '../lib/services';
   import { session } from '../lib/store/session.svelte';
@@ -44,6 +45,10 @@
   /** After an auto-capture, the page must move this much (or leave) before the next one. */
   const REARM_MOVE = 0.08;
   const MIN_CONFIDENCE = 0.45;
+  /** A page covering less of the frame than this is too far away to read well. */
+  const SMALL_AREA = 0.18;
+  /** Mean frame brightness (0..1) below which the scene is too dark. */
+  const DARK_LUMA = 0.16;
 
   let stage = $state<HTMLDivElement | null>(null);
   let video = $state<HTMLVideoElement | null>(null);
@@ -63,6 +68,12 @@
   let flash = $state(false);
   /** The still is being taken: the phone must not move yet. */
   let exposing = $state(false);
+  /** Brief "Page N added" confirmation. */
+  let added = $state<number | null>(null);
+  let addedTimer: ReturnType<typeof setTimeout> | undefined;
+  let dark = $state(false);
+  /** The outline as drawn: eases towards `quad` every animation frame. */
+  let shown = $state.raw<Quad | null>(null);
 
   let track: MediaStreamTrack | null = null;
   let stream: MediaStream | null = null;
@@ -121,6 +132,10 @@
       .ready.then(() => (detectorState = 'ready'))
       .catch(() => (detectorState = 'failed'));
     void detectLoop();
+    let frame = requestAnimationFrame(function animate(time) {
+      animateOutline(time);
+      frame = requestAnimationFrame(animate);
+    });
 
     const observer = new ResizeObserver(([entry]) => {
       stageSize = { width: entry.contentRect.width, height: entry.contentRect.height };
@@ -130,6 +145,8 @@
     return () => {
       running = false;
       openToken++;
+      cancelAnimationFrame(frame);
+      clearTimeout(addedTimer);
       observer.disconnect();
       stopStream(stream);
       stream = null;
@@ -170,11 +187,55 @@
     const next = detection.quad;
     if (!raw || maxMove(raw, next) > STEADY_MOVE) steadySince = now;
     raw = next;
-    quad = quad ? blend(quad, next, 0.55) : next;
+    quad = next;
 
     if (!armed && lastCaptured && maxMove(lastCaptured, next) > REARM_MOVE) armed = true;
     steady = armed ? Math.min(1, (now - steadySince) / STEADY_MS) : 0;
     if (autoCapture && armed && steady >= 1 && !capturing) void capture(true);
+  }
+
+  /** Signed-area magnitude of a quad in normalised frame coordinates. */
+  function area(q: Quad): number {
+    let sum = 0;
+    for (let i = 0; i < 4; i++) {
+      const [x0, y0] = q[i];
+      const [x1, y1] = q[(i + 1) % 4];
+      sum += x0 * y1 - x1 * y0;
+    }
+    return Math.abs(sum) / 2;
+  }
+
+  const tooFar = $derived(quad !== null && area(quad) < SMALL_AREA);
+
+  /** Mean brightness of the video frame, from a tiny copy. */
+  function measureLight(probe: CanvasRenderingContext2D, source: HTMLVideoElement) {
+    probe.drawImage(source, 0, 0, 16, 16);
+    const { data } = probe.getImageData(0, 0, 16, 16);
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+    const mean = sum / (data.length / 4) / 255;
+    // Hysteresis, so the hint does not flicker around the limit.
+    dark = dark ? mean < DARK_LUMA * 1.25 : mean < DARK_LUMA;
+  }
+
+  let lastTime = 0;
+
+  function animateOutline(time: number) {
+    const dt = Math.min(100, time - (lastTime || time));
+    lastTime = time;
+    if (!quad) {
+      shown = null;
+      return;
+    }
+    if (!shown) {
+      shown = quad;
+      return;
+    }
+    // Exponential ease: ~90% of the way in 120 ms, independent of frame rate.
+    const t = 1 - Math.exp(-dt / 52);
+    if (maxMove(shown, quad) > 0.0005) shown = blend(shown, quad, t);
   }
 
   async function detectLoop() {
@@ -183,6 +244,11 @@
     canvas.width = MODEL_INPUT;
     canvas.height = MODEL_INPUT;
     const ctx = canvas.getContext('2d', { willReadFrequently: false });
+    const probeCanvas = document.createElement('canvas');
+    probeCanvas.width = 16;
+    probeCanvas.height = 16;
+    const probe = probeCanvas.getContext('2d', { willReadFrequently: true });
+    let frames = 0;
     while (running) {
       if (
         detectorState !== 'ready' ||
@@ -196,6 +262,7 @@
       }
       const started = performance.now();
       try {
+        if (probe && frames++ % 8 === 0) measureLight(probe, video);
         ctx?.drawImage(video, 0, 0, MODEL_INPUT, MODEL_INPUT);
         const bitmap = await createImageBitmap(canvas);
         const { detection } = await detector().frame(bitmap);
@@ -251,8 +318,13 @@
       exposing = false;
       flash = true;
       setTimeout(() => (flash = false), 180);
-      if (navigator.vibrate) navigator.vibrate(30);
+      haptic('capture');
       const { id, found, blurred } = await addPhoto(still);
+      if (!retakeId) {
+        added = session.pages.length;
+        clearTimeout(addedTimer);
+        addedTimer = setTimeout(() => (added = null), 1400);
+      }
       if (blurred)
         toast('That page came out blurred. Hold still until the flash and retake it.', 'err');
       if (retakeId) onRetaken(id);
@@ -315,8 +387,8 @@
   });
 
   const polygon = $derived(
-    quad && mapping
-      ? quad.map(([x, y]) => `${mapping.x + x * mapping.w},${mapping.y + y * mapping.h}`).join(' ')
+    shown && mapping
+      ? shown.map(([x, y]) => `${mapping.x + x * mapping.w},${mapping.y + y * mapping.h}`).join(' ')
       : '',
   );
 </script>
@@ -351,13 +423,23 @@
       <div class="notice"><div class="spinner"></div></div>
     {/if}
 
-    <div class="status">
+    <div class="status" role="status" aria-live="polite">
       {#if detectorState === 'loading'}
         <span class="pill">Loading page detector…</span>
       {:else if detectorState === 'failed'}
         <span class="pill warn">Auto-detect unavailable — crop by hand</span>
       {:else if capturing}
         <span class="pill" class:hold={exposing}>{exposing ? 'Hold still…' : 'Processing…'}</span>
+      {:else if added !== null}
+        <span class="pill good">Page {added} added</span>
+      {:else if dark && cameraReady}
+        <span class="pill warn">
+          {torchAvailable && !torchOn
+            ? 'Too dark — turn on the flash'
+            : 'Too dark — find more light'}
+        </span>
+      {:else if tooFar}
+        <span class="pill">Move closer</span>
       {:else if quad && autoCapture && steady > 0}
         <span class="pill">Hold steady…</span>
       {:else if !quad && cameraReady}
@@ -413,7 +495,9 @@
     {:else if lastPage}
       <button class="thumb" onclick={onClose} aria-label="Review {session.pages.length} pages">
         <PageCanvas page={lastPage} longEdge={520} channel="camera-thumb" class="thumb-canvas" />
-        <span class="count">{session.pages.length}</span>
+        {#key session.pages.length}
+          <span class="count pop">{session.pages.length}</span>
+        {/key}
       </button>
     {:else}
       <div class="thumb-slot"></div>
@@ -568,6 +652,28 @@
 
   .pill.warn {
     color: var(--warn);
+  }
+
+  .pill.good {
+    background: rgb(34 197 94 / 85%);
+    color: #04140a;
+    font-weight: 600;
+  }
+
+  .pop {
+    animation: pop 0.35s ease;
+  }
+
+  @keyframes pop {
+    40% {
+      transform: scale(1.35);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pop {
+      animation: none;
+    }
   }
 
   .controls {
