@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
   import { dismissToast, ui } from '../lib/ui.svelte';
+  import { applyUpdate, dismissUpdate, update } from '../lib/update.svelte';
 </script>
 
 {#if ui.busy}
@@ -14,6 +15,16 @@
       {@const action = ui.busy.action}
       <button class="action" onclick={() => action.run()}>{action.label}</button>
     {/if}
+  </div>
+{/if}
+
+{#if (update.ready || update.applied) && !ui.busy}
+  <div class="update" role="status" aria-live="polite" transition:fly={{ y: -12, duration: 180 }}>
+    <span
+      >{update.applied ? 'The app was updated in another window.' : 'A new version is ready.'}</span
+    >
+    <button class="update-reload" onclick={() => void applyUpdate()}>Reload</button>
+    <button class="update-later" onclick={dismissUpdate} aria-label="Later">×</button>
   </div>
 {/if}
 
@@ -46,6 +57,41 @@
 {/if}
 
 <style>
+  .update {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: calc(100% - 24px);
+    padding: 8px 8px 8px 16px;
+    border-radius: 999px;
+    background: var(--panel-3);
+    color: var(--text);
+    box-shadow: 0 6px 24px rgb(0 0 0 / 35%);
+    font-size: 14px;
+  }
+
+  .update-reload {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .update-later {
+    padding: 4px 10px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 18px;
+  }
+
   .busy {
     position: fixed;
     inset: 0;
