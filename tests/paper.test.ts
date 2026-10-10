@@ -354,3 +354,31 @@ describe('pushPull', () => {
     expect(out[32]).toBeLessThan(80);
   });
 });
+
+describe('print mistaken for a picture', () => {
+  it('keeps a barcode black and the page grey', () => {
+    const bars: [number, number][] = [];
+    const img = photograph((page) => {
+      // Bars 3–9 px wide: a dense block at the analysis' coarse scale.
+      let x = 200;
+      for (let k = 0; x < 760; k++) {
+        const bar = 3 + ((k * 4) % 7);
+        page.rect(x, 1050, x + bar, 1350, [0.08, 0.08, 0.08]);
+        bars.push([x, bar]);
+        x += bar + 1 + ((k * 3) % 3);
+      }
+      for (let r = 0; r < 12; r++) page.word(120, 150 + r * 40, 30, [0.1, 0.1, 0.1]);
+    });
+    const out = applyFilter(img, 'document');
+    let coloured = 0;
+    for (let p = 0; p < out.data.length; p += 4) {
+      if (out.data[p] !== out.data[p + 1] || out.data[p + 1] !== out.data[p + 2]) coloured++;
+    }
+    expect(coloured).toBe(0);
+    // The middle of every wide bar is black.
+    for (const [x, bar] of bars) {
+      if (bar < 7) continue;
+      expect(px(out, x + (bar >> 1), 1150)[0]).toBeLessThan(30);
+    }
+  });
+});
