@@ -66,6 +66,11 @@ export async function exportPdf(
   return buildPdf(out, { title });
 }
 
+function ios(): boolean {
+  if (/iPhone|iPad/i.test(navigator.userAgent)) return true;
+  return /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1;
+}
+
 /** Phones and tablets, where the share sheet is how files leave the browser. */
 function mobile(): boolean {
   if (/Android|iPhone|iPad/i.test(navigator.userAgent)) return true;
@@ -121,8 +126,8 @@ export async function saveFile(
       // Fall through to a download.
     }
   }
-  // Mobile browsers may also ignore a download without a recent tap.
-  if (deferShare && mobile() && navigator.userActivation && !navigator.userActivation.isActive) {
+  // iOS may also ignore a download without a recent tap; Android does not.
+  if (deferShare && ios() && navigator.userActivation && !navigator.userActivation.isActive) {
     return 'needs-tap';
   }
   const url = URL.createObjectURL(blob);

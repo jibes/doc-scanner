@@ -60,7 +60,7 @@ describe('saveFile', () => {
     expect(click).toHaveBeenCalled();
   });
 
-  it('asks for a fresh tap before a late download on a phone', async () => {
+  it('asks for a fresh tap before a late download on iOS', async () => {
     const { click } = phone(null, { userActivation: { isActive: false } });
     expect(await saveFile(new Blob(['%PDF']), 'a.pdf', { download: true, deferShare: true })).toBe(
       'needs-tap',
