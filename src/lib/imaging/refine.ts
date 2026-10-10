@@ -75,10 +75,17 @@ function intersect(a: Line, b: Line): Point | null {
  * A refined corner is only accepted if it stays inside the search band and
  * the quad stays convex; otherwise the detector's corner is kept.
  *
- * `gray` is a luma image; `quad` is in its pixel-edge coordinates.
+ * `gray` is a luma image; `quad` is in its pixel-edge coordinates. A quad
+ * that is already close (from the edge search) takes a narrow `reach`, so
+ * that a strong edge just inside the page (a dark band's) cannot pull it in.
  */
-export function refineQuad(gray: FloatImage, quad: Quad): Quad {
-  const band = Math.max(4, Math.max(gray.width, gray.height) * SEARCH);
+export function refineQuad(
+  gray: FloatImage,
+  quad: Quad,
+  /** Search band either side, pixels (default: SEARCH of the long edge). */
+  reach?: number,
+): Quad {
+  const band = reach ?? Math.max(4, Math.max(gray.width, gray.height) * SEARCH);
   const cx = quad.reduce((s, p) => s + p[0], 0) / 4;
   const cy = quad.reduce((s, p) => s + p[1], 0) / 4;
   const lines: (Line | null)[] = [];

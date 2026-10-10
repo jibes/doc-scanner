@@ -1,12 +1,13 @@
 import * as ort from 'onnxruntime-web/wasm';
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import { heatmapsToQuad, type Detection } from '../detect/heatmap';
-import { toLuma, type Quad } from '../imaging/image';
-import { scaleQuad } from '../imaging/quad';
+import { clipToFrame, colourPlanes, quadSupported, searchQuad } from '../detect/quadSearch';
+import { toLuma, type FloatImage, type Quad, type RGBAImage } from '../imaging/image';
+import { quadArea, scaleQuad } from '../imaging/quad';
 import { refineQuad } from '../imaging/refine';
 import { sharpness } from '../imaging/sharpness';
 import { MODEL_INPUT } from '../detect/model';
-import type { DetectorRequest, DetectorResponse } from './protocol';
+import type { DetectorRequest, DetectorResponse, StillResult, StillSource } from './protocol';
 
 declare const self: {
   onmessage: ((event: MessageEvent<DetectorRequest>) => void) | null;
@@ -68,13 +69,67 @@ async function infer(bitmap: ImageBitmap): Promise<Detection | null> {
   return heatmapsToQuad(heat.data as Float32Array, size);
 }
 
-async function detectStill(source: Blob): Promise<{
-  quad: Quad | null;
-  width: number;
-  height: number;
+/** Search resolution for the edge-based page finder, relative to REFINE_EDGE. */
+const SEARCH_FACTOR = 2;
+/** The edge search's quad is within a couple of pixels; refine it only that far. */
+const EDGE_REFINE_REACH = 4 * SEARCH_FACTOR;
+/** The edge search replaces a well-supported model quad only if it is clearly larger. */
+const MIN_GROWTH = 1.03;
+
+/**
+ * The page in a still, from the model's quad checked against the photo's
+ * edges (detect/quadSearch.ts): kept when all four sides are real edges and
+ * no larger fully supported quad contains it, replaced by the edge search's
+ * quad otherwise. Coordinates are those of `rgba` / `luma`.
+ */
+function findPage(
+  rgba: RGBAImage,
+  luma: FloatImage,
+  detection: Detection | null,
+): {
+  quad: Quad;
   confidence: number;
-  sharpness: number;
-}> {
+  source: StillSource;
+  offFrame: boolean;
+} | null {
+  const { width: w, height: h } = luma;
+  const model = detection ? refineQuad(luma, scaleQuad(detection.quad, w, h)) : null;
+  const planes = colourPlanes(rgba, SEARCH_FACTOR);
+  const toPlanes = planes.width / w;
+  const modelSmall = model ? scaleQuad(model, toPlanes) : null;
+  const modelOk = modelSmall !== null && quadSupported(planes, modelSmall);
+  const search = searchQuad(planes, { contain: modelOk ? modelSmall : undefined });
+  if (
+    model &&
+    detection &&
+    (!search || (modelOk && quadArea(search.quad) < quadArea(modelSmall!) * MIN_GROWTH))
+  ) {
+    // The model may put a corner past the photo's edge for a page that runs off it.
+    const quad = clipToFrame(model, w, h);
+    return {
+      quad,
+      confidence: detection.confidence,
+      source: 'model',
+      offFrame: quad.some((p, i) => p[0] !== model[i][0] || p[1] !== model[i][1]),
+    };
+  }
+  if (!search) return null;
+  const quad = clipToFrame(
+    refineQuad(luma, scaleQuad(search.quad, 1 / toPlanes), EDGE_REFINE_REACH),
+    w,
+    h,
+  );
+  return {
+    quad,
+    // The edge search has no calibrated confidence; report the model's
+    // when it agreed on the page at all.
+    confidence: detection && modelOk ? detection.confidence : 0.5,
+    source: 'edges',
+    offFrame: search.offFrame,
+  };
+}
+
+async function detectStill(source: Blob): Promise<StillResult> {
   // Decode once; the model, the refinement and the blur check all draw from
   // this bitmap.
   const full = await createImageBitmap(source, { imageOrientation: 'from-image' });
@@ -90,12 +145,22 @@ async function detectStill(source: Blob): Promise<{
     if (!ctx) throw new Error('Could not create a 2D canvas context');
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(full, 0, 0, w, h);
-    const luma = toLuma({ data: ctx.getImageData(0, 0, w, h).data, width: w, height: h });
+    const rgba = { data: ctx.getImageData(0, 0, w, h).data, width: w, height: h };
+    const luma = toLuma(rgba);
 
-    if (!detection) {
-      return { quad: null, width, height, confidence: 0, sharpness: sharpness(luma) };
+    const found = findPage(rgba, luma, detection);
+    if (!found) {
+      return {
+        quad: null,
+        width,
+        height,
+        confidence: 0,
+        sharpness: sharpness(luma),
+        source: 'none',
+        offFrame: false,
+      };
     }
-    const refined = refineQuad(luma, scaleQuad(detection.quad, w, h));
+    const refined = found.quad;
     // Judge sharpness on the page itself, a little inside its edges.
     const xs = refined.map((p) => p[0]);
     const ys = refined.map((p) => p[1]);
@@ -105,7 +170,9 @@ async function detectStill(source: Blob): Promise<{
       quad: scaleQuad(refined, width / w, height / h),
       width,
       height,
-      confidence: detection.confidence,
+      confidence: found.confidence,
+      source: found.source,
+      offFrame: found.offFrame,
       sharpness: sharpness(luma, {
         x0: Math.min(...xs) + insetX,
         y0: Math.min(...ys) + insetY,

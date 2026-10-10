@@ -8,6 +8,8 @@ class FakeWorker {
   static all: FakeWorker[] = [];
   /** Whether OCR workers answer; off to let a test crash one first. */
   static ocrAnswers = true;
+  /** Quarter turns OCR reports the page needs (when asked to orient it). */
+  static turn = 0;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: unknown = null;
   onmessageerror: unknown = null;
@@ -36,7 +38,12 @@ class FakeWorker {
               : undefined,
           }
         : message.type === 'ocr' && FakeWorker.ocrAnswers
-          ? { type: 'words', id, words: [] }
+          ? {
+              type: 'words',
+              id,
+              words: [{ text: 'Hello', x0: 0, y0: 0, x1: 1, y1: 1, confidence: 0.9 }],
+              turn: message.orient ? FakeWorker.turn : 0,
+            }
           : null;
     if (answer) queueMicrotask(() => this.onmessage?.({ data: answer }));
   }
@@ -75,6 +82,7 @@ function cachedModels(files: number) {
 beforeEach(() => {
   FakeWorker.all = [];
   FakeWorker.ocrAnswers = true;
+  FakeWorker.turn = 0;
   vi.stubGlobal('Worker', FakeWorker);
   vi.resetModules();
 });
@@ -95,7 +103,7 @@ describe('export cache', () => {
 
     // Saving a searchable PDF is what fetches them.
     const encoded = await cache.encodedPage(page, DEFAULT_SETTINGS, { text: true });
-    expect(await encoded.words).toEqual([]);
+    expect((await encoded.text)?.words).toHaveLength(1);
     expect(encodes()).toHaveLength(2);
     expect(ocrWorkers()).toHaveLength(1);
   });
@@ -106,7 +114,7 @@ describe('export cache', () => {
     cache.prefetchExports([page], DEFAULT_SETTINGS);
     await vi.waitFor(() => expect(ocrWorkers()).toHaveLength(1));
     const encoded = await cache.encodedPage(page, DEFAULT_SETTINGS, { text: true });
-    expect(await encoded.words).toEqual([]);
+    expect((await encoded.text)?.words).toHaveLength(1);
     expect(encodes()).toHaveLength(1);
   });
 
@@ -121,11 +129,11 @@ describe('export cache', () => {
       message: 'crashed',
       preventDefault: () => undefined,
     });
-    expect(await first.words).toEqual([]);
+    expect((await first.text)?.words).toEqual([]);
     FakeWorker.ocrAnswers = true;
     const second = await cache.encodedPage(page, DEFAULT_SETTINGS, { text: true });
-    expect(second.words).not.toBeNull();
-    expect(await second.words).toEqual([]);
+    expect(second.text).not.toBeNull();
+    expect((await second.text)?.words).toHaveLength(1);
     expect(encodes()).toHaveLength(2);
   });
 
@@ -134,7 +142,7 @@ describe('export cache', () => {
     const cache = await import('../src/lib/exportCache');
     await (
       await cache.encodedPage(page, DEFAULT_SETTINGS, { text: true })
-    ).words;
+    ).text;
     const [reader] = ocrWorkers();
     await vi.advanceTimersByTimeAsync(59_000);
     expect(reader.terminated).toBe(false);
@@ -145,7 +153,42 @@ describe('export cache', () => {
     const again = { ...page, spec: { quad: null, rotation: 1 } as unknown as PageSpec };
     await (
       await cache.encodedPage(again, DEFAULT_SETTINGS, { text: true })
-    ).words;
+    ).text;
     expect(ocrWorkers()).toHaveLength(2);
+  });
+
+  it('renders a page OCR found upside down upright, with the words already read', async () => {
+    const cache = await import('../src/lib/exportCache');
+    FakeWorker.turn = 2;
+    const turned: [Page, Page][] = [];
+    cache.onPageTurned((read, upright) => turned.push([read, upright]));
+    const upsideDown = { ...page, spec: { quad: null, rotation: 0 } as unknown as PageSpec };
+    const encoded = await cache.encodedPage(upsideDown, DEFAULT_SETTINGS, { text: true });
+    const text = await encoded.text;
+    expect(text?.turn).toBe(2);
+    expect(turned).toHaveLength(1);
+    expect(turned[0][1].spec).toMatchObject({ rotation: 2, oriented: true });
+    const upright = await cache.uprightPage(upsideDown, DEFAULT_SETTINGS, text!);
+    expect(upright.words).toHaveLength(1);
+    expect(encodes().map((m) => (m.spec as PageSpec).rotation)).toEqual([0, 2]);
+    // The upright page is not read again, and its orientation is settled.
+    const again = await cache.encodedPage(turned[0][1], DEFAULT_SETTINGS, { text: true });
+    expect((await again.text)?.turn).toBe(0);
+    const reads = FakeWorker.all.flatMap((w) => w.posted).filter((m) => m.type === 'ocr');
+    expect(reads).toHaveLength(1);
+    expect(reads[0].orient).toBe(true);
+  });
+
+  it('does not orient a page whose rotation is settled', async () => {
+    const cache = await import('../src/lib/exportCache');
+    FakeWorker.turn = 1;
+    const settled = {
+      ...page,
+      spec: { quad: null, rotation: 3, oriented: true } as unknown as PageSpec,
+    };
+    const encoded = await cache.encodedPage(settled, DEFAULT_SETTINGS, { text: true });
+    expect((await encoded.text)?.turn).toBe(0);
+    const reads = FakeWorker.all.flatMap((w) => w.posted).filter((m) => m.type === 'ocr');
+    expect(reads[0].orient).toBe(false);
   });
 });

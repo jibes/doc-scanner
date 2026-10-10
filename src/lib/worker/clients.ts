@@ -1,5 +1,4 @@
 import type { Detection } from '../detect/heatmap';
-import type { Quad } from '../imaging/image';
 import type { PdfImage } from '../pdf/writer';
 import type { OcrWord } from '../ocr/paddle';
 import type {
@@ -10,6 +9,7 @@ import type {
   ProcessorRequest,
   ProcessorResponse,
   RenderJob,
+  StillResult,
 } from './protocol';
 
 type Pending<T> = { resolve: (value: T) => void; reject: (error: Error) => void };
@@ -280,13 +280,7 @@ export class DetectorClient extends WorkerClient<DetectorResponse> {
     return response;
   }
 
-  async still(source: Blob): Promise<{
-    quad: Quad | null;
-    width: number;
-    height: number;
-    confidence: number;
-    sharpness: number;
-  }> {
+  async still(source: Blob): Promise<StillResult> {
     const response = await this.request({ type: 'still', source }, { timeoutMs: STILL_TIMEOUT_MS });
     if (response.type !== 'still') throw new Error('Unexpected detector response');
     return response;
@@ -304,17 +298,25 @@ export class OcrClient extends WorkerClient<OcrResponse> {
     super(new Worker(new URL('./ocr.worker.ts', import.meta.url), { type: 'module' }), 'OCR');
   }
 
-  /** Words found in an image, in its pixel coordinates. Takes ownership of `data`. */
-  async recognise(image: {
-    data: Uint8ClampedArray<ArrayBuffer>;
-    width: number;
-    height: number;
-  }): Promise<OcrWord[]> {
+  /**
+   * Words found in an image, in its pixel coordinates. With `orient`, the
+   * page may be found to be sideways or upside down: the words are then in
+   * the pixels of the image turned upright by `turn` clockwise quarter
+   * turns. Takes ownership of `data`.
+   */
+  async recognise(
+    image: {
+      data: Uint8ClampedArray<ArrayBuffer>;
+      width: number;
+      height: number;
+    },
+    { orient = false }: { orient?: boolean } = {},
+  ): Promise<{ words: OcrWord[]; turn: number }> {
     const response = await this.request(
-      { type: 'ocr', ...image } satisfies Distribute<OcrRequest>,
+      { type: 'ocr', ...image, orient } satisfies Distribute<OcrRequest>,
       { transfer: [image.data.buffer], timeoutMs: OCR_TIMEOUT_MS },
     );
     if (response.type !== 'words') throw new Error('Unexpected OCR response');
-    return response.words;
+    return { words: response.words, turn: response.turn };
   }
 }

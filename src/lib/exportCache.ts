@@ -11,11 +11,45 @@ export interface EncodedPage {
   width: number;
   height: number;
   /**
-   * Recognised words in the encoded image's pixels, once OCR has run. The
-   * promise resolves to [] if OCR fails: a PDF without a text layer is still
-   * a good PDF. Null when the text was not asked for.
+   * The page's text, once OCR has run. The promise resolves to no words if
+   * OCR fails: a PDF without a text layer is still a good PDF. Null when the
+   * text was not asked for.
    */
-  words: Promise<OcrWord[]> | null;
+  text: Promise<PageText> | null;
+}
+
+export interface PageText {
+  /**
+   * Recognised words, in the pixels of the encoded image turned by `turn`
+   * (the same scale, so for `turn` 0 the encoded image's own pixels).
+   */
+  words: OcrWord[];
+  /**
+   * Clockwise quarter turns OCR found the page needs to be upright (0 for a
+   * page whose orientation was already settled). The turned page, rendered,
+   * is `uprightPage`'s, with these words.
+   */
+  turn: number;
+}
+
+/** A page as it is once turned by `turn` quarter turns: its orientation is then settled. */
+export function turnedPage(page: Page, turn: number): Page {
+  return {
+    ...page,
+    spec: { ...page.spec, rotation: (page.spec.rotation + turn) % 4, oriented: true },
+  };
+}
+
+type TurnListener = (page: Page, turned: Page) => void;
+const turnListeners = new Set<TurnListener>();
+
+/**
+ * Be told when OCR finds that a page is sideways or upside down: `page` is
+ * the page as it was read, `turned` the same page upright.
+ */
+export function onPageTurned(listener: TurnListener): () => void {
+  turnListeners.add(listener);
+  return () => turnListeners.delete(listener);
 }
 
 /** Long edge of the page image handed to OCR: text lines come out ~35 px tall. */
@@ -56,15 +90,18 @@ function worker(): ProcessorClient {
 }
 
 /** Run OCR, closing the worker once it has been idle for a while (it is recreated on demand). */
-function recognise(image: {
-  data: Uint8ClampedArray<ArrayBuffer>;
-  width: number;
-  height: number;
-}): Promise<OcrWord[]> {
+function recognise(
+  image: {
+    data: Uint8ClampedArray<ArrayBuffer>;
+    width: number;
+    height: number;
+  },
+  orient: boolean,
+): Promise<{ words: OcrWord[]; turn: number }> {
   clearTimeout(readerIdle);
   if (!reader || reader.dead) reader = new OcrClient();
   reading++;
-  return reader.recognise(image).finally(() => {
+  return reader.recognise(image, { orient }).finally(() => {
     if (--reading > 0) return;
     readerIdle = setTimeout(() => {
       reader?.dispose();
@@ -102,7 +139,7 @@ async function encode(page: Page, settings: AppSettings, text: boolean): Promise
   const withText = text && settings.ocr;
   for (;;) {
     const done = ready.get(k);
-    if (done && (done.words || !withText)) return done;
+    if (done && (done.text || !withText)) return done;
     const running = inFlight.get(k);
     if (!running) break;
     await running.catch(() => undefined);
@@ -118,24 +155,27 @@ async function encode(page: Page, settings: AppSettings, text: boolean): Promise
         image: result.image,
         width: result.width,
         height: result.height,
-        words: null,
+        text: null,
       };
       if (result.ocr) {
         const toPage = result.width / result.ocr.width;
-        entry.words = recognise(result.ocr)
-          .then((found) =>
-            found.map((w) => ({
+        // A page whose rotation the user or OCR has settled is read as it is.
+        entry.text = recognise(result.ocr, !page.spec.oriented)
+          .then(({ words, turn }): PageText => {
+            const scaled = words.map((w) => ({
               ...w,
               x0: w.x0 * toPage,
               x1: w.x1 * toPage,
               y0: w.y0 * toPage,
               y1: w.y1 * toPage,
-            })),
-          )
+            }));
+            if (turn) settleTurn(page, settings, turn, scaled);
+            return { words: scaled, turn };
+          })
           .catch(() => {
             // This export goes out without text; the next one tries again.
-            if (ready.get(k) === entry) ready.set(k, { ...entry, words: null });
-            return [];
+            if (ready.get(k) === entry) ready.set(k, { ...entry, text: null });
+            return { words: [], turn: 0 };
           });
       }
       ready.set(k, entry);
@@ -144,6 +184,37 @@ async function encode(page: Page, settings: AppSettings, text: boolean): Promise
     .finally(() => inFlight.delete(k));
   inFlight.set(k, running);
   return running;
+}
+
+/**
+ * OCR found a page sideways or upside down: render it upright with the words
+ * already read (so neither the export nor a later one reads it again), and
+ * tell the listeners so the document shows it upright too.
+ */
+function settleTurn(page: Page, settings: AppSettings, turn: number, words: OcrWord[]): void {
+  const upright = turnedPage(page, turn);
+  const text: PageText = { words, turn: 0 };
+  void encode(upright, settings, false)
+    .then((entry) => {
+      const k = key(upright, settings);
+      if (ready.get(k) === entry && !entry.text)
+        ready.set(k, { ...entry, text: Promise.resolve(text) });
+    })
+    .catch(() => undefined);
+  for (const listener of turnListeners) listener(page, upright);
+}
+
+/**
+ * The page as OCR found it upright (`text.turn` quarter turns from `page`),
+ * rendered for export, with its words.
+ */
+export async function uprightPage(
+  page: Page,
+  settings: AppSettings,
+  text: PageText,
+): Promise<{ image: PdfImage; width: number; height: number; words: OcrWord[] }> {
+  const entry = await encode(turnedPage(page, text.turn), settings, false);
+  return { image: entry.image, width: entry.width, height: entry.height, words: text.words };
 }
 
 /**
@@ -175,7 +246,9 @@ export function prefetchExports(pages: Page[], settings: AppSettings): void {
         const entry = await encode(page, settings, text);
         // Let OCR finish before starting the next render, so the two
         // background workers do not compete with each other for the CPU.
-        await entry.words;
+        const read = await entry.text;
+        // A page found sideways: wait for its upright render too.
+        if (read?.turn) await encode(turnedPage(page, read.turn), settings, false);
       } catch {
         // A failed prefetch is retried for real when the user exports.
       }

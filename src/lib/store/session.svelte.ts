@@ -1,3 +1,4 @@
+import { onPageTurned } from '../exportCache';
 import type { Quad } from '../imaging/image';
 import type { PageSpec } from '../pipeline';
 import { toast } from '../ui.svelte';
@@ -130,6 +131,7 @@ class Session {
   private unsavedPhotos = new Set<string>();
 
   constructor() {
+    onPageTurned((read, upright) => this.turned(read, upright));
     whenBlocked(() =>
       toast('Close the app’s other tabs or windows so it can open your saved pages.', 'info'),
     );
@@ -213,13 +215,39 @@ class Session {
   }
 
   update(id: string, spec: Partial<PageSpec>): void {
+    // A page the user has turned is never turned again by auto-orientation.
+    const settled = 'rotation' in spec ? { oriented: true } : {};
     let changed = false;
     this.pages = this.pages.map((p) => {
       if (p.id !== id) return p;
       changed = true;
-      return { ...p, spec: { ...p.spec, ...spec } };
+      return { ...p, spec: { ...p.spec, ...spec, ...settled } };
     });
     if (changed) this.touch([id]);
+  }
+
+  /**
+   * OCR found a page sideways or upside down (exportCache.ts): turn it, as
+   * long as it is still the page that was read (same photo, crop and
+   * rotation) and its orientation has not been settled meanwhile.
+   */
+  private turned(read: Page, upright: Page): void {
+    const page = this.get(read.id);
+    if (
+      !page ||
+      page.source !== read.source ||
+      page.spec.oriented ||
+      page.spec.rotation !== read.spec.rotation ||
+      JSON.stringify(page.spec.quad) !== JSON.stringify(read.spec.quad)
+    ) {
+      return;
+    }
+    this.pages = this.pages.map((p) =>
+      p.id === page.id
+        ? { ...p, spec: { ...p.spec, rotation: upright.spec.rotation, oriented: true } }
+        : p,
+    );
+    this.touch([page.id]);
   }
 
   /** Replace the source photo, e.g. after a retake, keeping the page's position. */

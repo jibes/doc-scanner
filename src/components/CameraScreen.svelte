@@ -5,7 +5,7 @@
   import { MODEL_INPUT } from '../lib/detect/model';
   import type { FilterId } from '../lib/imaging/filters';
   import type { Point, Quad } from '../lib/imaging/image';
-  import { insetQuad } from '../lib/imaging/quad';
+  import { fallbackQuad } from '../lib/imaging/quad';
   import { isBlurred } from '../lib/imaging/sharpness';
   import { haptic } from '../lib/haptics';
   import { defaultSpec } from '../lib/pipeline';
@@ -359,17 +359,32 @@
 
   /* ----------------------------------------------------------- capture ---- */
 
-  async function addPhoto(source: Blob): Promise<{ id: string; found: boolean; blurred: boolean }> {
-    let result: { quad: Quad | null; width: number; height: number; sharpness: number | null };
+  async function addPhoto(
+    source: Blob,
+  ): Promise<{ id: string; found: boolean; blurred: boolean; offFrame: boolean }> {
+    let result: {
+      quad: Quad | null;
+      width: number;
+      height: number;
+      sharpness: number | null;
+      offFrame: boolean;
+    };
     try {
       result = await pageDetector.still(source);
     } catch {
       if (pageDetector.dead) detectorState = 'failed';
       const bitmap = await createImageBitmap(source);
-      result = { quad: null, width: bitmap.width, height: bitmap.height, sharpness: null };
+      result = {
+        quad: null,
+        width: bitmap.width,
+        height: bitmap.height,
+        sharpness: null,
+        offFrame: false,
+      };
       bitmap.close();
     }
-    const pageQuad = result.quad ?? insetQuad(result.width, result.height, 0.04);
+    const pageQuad = result.quad ?? fallbackQuad(result.width, result.height);
+    const offFrame = result.offFrame;
     const photo = {
       source,
       width: result.width,
@@ -380,10 +395,10 @@
     const blurred = isBlurred(result);
     if (retakeId && session.get(retakeId)) {
       session.replaceSource(retakeId, { ...photo, quad: pageQuad });
-      return { id: retakeId, found: result.quad !== null, blurred };
+      return { id: retakeId, found: result.quad !== null, blurred, offFrame };
     }
     const page = session.add({ ...photo, spec: defaultSpec(pageQuad, defaultFilter) });
-    return { id: page.id, found: result.quad !== null, blurred };
+    return { id: page.id, found: result.quad !== null, blurred, offFrame };
   }
 
   async function capture(auto = false) {
@@ -401,7 +416,7 @@
       flash = true;
       setTimeout(() => (flash = false), 180);
       haptic('capture');
-      const { id, found, blurred } = await addPhoto(still);
+      const { id, found, blurred, offFrame } = await addPhoto(still);
       // The page is kept, but a camera screen that has closed meanwhile must
       // not navigate anywhere.
       if (!running) return;
@@ -412,6 +427,8 @@
       }
       if (blurred)
         toast('That page came out blurred. Hold still until the flash and retake it.', 'err');
+      else if (offFrame)
+        toast('The page runs off the photo; only the part in view was kept.', 'info');
       if (retakeId) onRetaken(id);
       else if (!found && !auto) {
         toast('No page edges found. Drag the corners into place.', 'info');
@@ -432,10 +449,12 @@
     if (!files.length) return;
     capturing = true;
     let missing = 0;
+    let cut = 0;
     try {
       for (const file of files) {
-        const { found } = await addPhoto(file);
+        const { found, offFrame } = await addPhoto(file);
         if (!found) missing++;
+        if (offFrame) cut++;
         if (retakeId) break;
       }
     } catch (error) {
@@ -447,6 +466,7 @@
     if (retakeId) onRetaken(retakeId);
     else {
       if (missing) toast(`${missing} page(s) had no detectable edges; check their crop.`, 'info');
+      else if (cut) toast(`${cut} page(s) run off the photo; check their crop.`, 'info');
       onClose();
     }
   }
