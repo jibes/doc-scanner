@@ -19,3 +19,16 @@ ONNX conversions published at
 <https://huggingface.co/ilaylow/PP_OCRv5_mobile_onnx> (`ppocrv5_det.onnx`) and
 <https://huggingface.co/monkt/paddleocr-onnx> (`languages/latin/rec.onnx`,
 `languages/latin/dict.txt`), both Apache-2.0.
+
+# Checksums (SHA-256)
+
+```
+f4117b786e3a18470f3865c93f3c2bd69d9b998edd60f385574a5c665e79594e  docaligner-lc100.onnx
+1eb7b4f7ab657ebd1c66d5f79bca7497f29768a2e3c15e52daecbba1a8e4a039  ppocrv5-det.onnx
+614ffc2d6d3902d360fad7f1b0dd455ee45e877069d14c4e51a99dc4ef144409  ppocrv5-latin-rec.onnx
+3c0a8a79b612653c25f765271714f71281e4e955962c153e272b7b8c1d2b13ff  ppocrv5-latin-dict.txt
+```
+
+The service worker caches the `ppocrv5-*` files under a name derived from a
+hash of their contents (see `vite.config.ts`), so replacing a model also
+replaces the cached copy.
