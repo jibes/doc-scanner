@@ -65,37 +65,64 @@ function pdfDate(d: Date): string {
 }
 
 /**
- * Helvetica advance widths (1/1000 em) for printable ASCII; anything else is
- * treated as an average letter. Only a rough natural width is needed: each
- * word is stretched to its measured width anyway.
+ * Helvetica advance widths (1/1000 em) for WinAnsi bytes 32..126 and
+ * 128..255 (unassigned bytes are never written). Only a rough natural width
+ * is needed, each word is stretched to its measured width anyway, but it has
+ * to be the width of the glyph actually drawn.
  */
 const HELVETICA =
   '278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584'
     .split(',')
     .map(Number);
+const HELVETICA_HIGH = (
+  '556,0,222,556,333,1000,556,556,333,1000,667,333,1000,0,611,0,' +
+  '0,222,222,333,333,350,556,1000,333,1000,500,333,944,0,500,667,' +
+  '278,333,556,556,556,556,260,556,333,737,370,556,584,333,737,333,' +
+  '400,584,333,333,333,556,537,278,333,333,365,556,834,834,834,611,' +
+  '667,667,667,667,667,667,1000,722,667,667,667,667,278,278,278,278,' +
+  '722,722,778,778,778,778,778,584,778,722,722,722,722,667,667,611,' +
+  '556,556,556,556,556,556,889,500,556,556,556,556,278,278,278,278,' +
+  '556,556,556,556,556,556,556,584,611,556,556,556,556,500,556,500'
+)
+  .split(',')
+  .map(Number);
+
+/** WinAnsi bytes 0x80..0x9F, which differ from Latin-1 (0 = unassigned). */
+const WIN_ANSI_HIGH = [
+  0x20ac, 0, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152,
+  0, 0x017d, 0, 0, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161,
+  0x203a, 0x0153, 0, 0x017e, 0x0178,
+];
+const WIN_ANSI = new Map(
+  WIN_ANSI_HIGH.map((code, i) => [code, 0x80 + i] as const).filter(([code]) => code),
+);
+
+/**
+ * The WinAnsiEncoding byte for a character, which covers English and Western
+ * European text (umlauts, accents, typographic quotes and dashes, euro
+ * sign). Other characters become '?': the text layer is for search and copy,
+ * and the image shows the real thing.
+ */
+function winAnsiByte(ch: string): number {
+  const code = ch.codePointAt(0)!;
+  if ((code >= 32 && code <= 126) || (code >= 160 && code <= 255)) return code;
+  return WIN_ANSI.get(code) ?? 63;
+}
 
 function textWidth(text: string): number {
   let w = 0;
   for (const ch of text) {
-    const code = ch.codePointAt(0)!;
-    w += code >= 32 && code <= 126 ? HELVETICA[code - 32] : 556;
+    const byte = winAnsiByte(ch);
+    w += byte < 127 ? HELVETICA[byte - 32] : HELVETICA_HIGH[byte - 128];
   }
   return w / 1000;
 }
 
-/**
- * A PDF string in WinAnsiEncoding, which covers English and Western European
- * text (umlauts, accents, euro sign). Other characters become '?': the
- * text layer is for search and copy, and the image shows the real thing.
- */
+/** A PDF string of `text` in WinAnsiEncoding. */
 function winAnsi(text: string): string {
   let out = '(';
   for (const ch of text) {
-    const code = ch.codePointAt(0)!;
-    let byte: number;
-    if (code === 0x20ac) byte = 0x80;
-    else if ((code >= 32 && code <= 126) || (code >= 160 && code <= 255)) byte = code;
-    else byte = 63;
+    const byte = winAnsiByte(ch);
     if (byte === 40 || byte === 41 || byte === 92) out += `\\${String.fromCharCode(byte)}`;
     else if (byte < 127) out += String.fromCharCode(byte);
     else out += `\\${byte.toString(8).padStart(3, '0')}`;
@@ -113,13 +140,15 @@ function textLayer(page: PdfPage): string {
     const natural = textWidth(word.text);
     const height = (word.y1 - word.y0) * sy;
     const width = (word.x1 - word.x0) * sx;
-    if (!(natural > 0) || height <= 0 || width <= 0) continue;
+    if (!(natural > 0) || !(height > 0) || !(width > 0)) continue;
     // Cap height is ~0.72 em; letters fill most of a detected line box.
     const size = height * 0.75;
     const scale = (100 * width) / (natural * size);
     const x = word.x0 * sx;
     // PDF y runs upwards; put the baseline near the bottom of the box.
     const y = page.height - (word.y1 * sy - height * 0.2);
+    // A NaN or Infinity would print as a name, and break the whole page.
+    if (![size, scale, x, y].every(Number.isFinite)) continue;
     ops += ` /F0 ${num(size)} Tf ${num(scale)} Tz 1 0 0 1 ${num(x)} ${num(y)} Tm ${winAnsi(word.text)} Tj`;
   }
   return `${ops} ET`;

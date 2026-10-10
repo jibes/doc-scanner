@@ -20,7 +20,7 @@ export function boxMean(src: FloatImage, radius: number): FloatImage {
   }
   const size = 2 * r + 1;
   const tmp = new Float32Array(w * h);
-  const line = new Float32Array(Math.max(w, h) + 2 * r);
+  const line = new Float32Array(w + 2 * r);
 
   for (let y = 0; y < h; y++) {
     const off = y * w;
@@ -33,14 +33,24 @@ export function boxMean(src: FloatImage, radius: number): FloatImage {
     }
   }
 
-  for (let x = 0; x < w; x++) {
-    for (let i = -r; i < h + r; i++) line[i + r] = tmp[reflect(i, h) * w + x];
-    let sum = 0;
-    for (let i = 0; i < size; i++) sum += line[i];
-    for (let y = 0; y < h; y++) {
-      out.data[y * w + x] = sum / size;
-      sum += line[y + size] - line[y];
-    }
+  // Vertically, one running sum per column, advanced a whole row at a time:
+  // walking down each column in turn reads memory a row apart per step. The
+  // sums take the same steps in the same order as a per-column walk would.
+  const rows = new Int32Array(h + 2 * r);
+  for (let i = -r; i < h + r; i++) rows[i + r] = reflect(i, h) * w;
+  const sums = new Float64Array(w);
+  for (let i = 0; i < size; i++) {
+    const off = rows[i];
+    for (let x = 0; x < w; x++) sums[x] += tmp[off + x];
+  }
+  const o = out.data;
+  for (let y = 0; y < h; y++) {
+    const off = y * w;
+    for (let x = 0; x < w; x++) o[off + x] = sums[x] / size;
+    if (y === h - 1) break;
+    const enter = rows[y + size];
+    const leave = rows[y];
+    for (let x = 0; x < w; x++) sums[x] += tmp[enter + x] - tmp[leave + x];
   }
   return out;
 }
@@ -77,11 +87,17 @@ export function gaussian(src: FloatImage, sigma: number): FloatImage {
   for (let i = 0; i < kernel.length; i++) kernel[i] /= sum;
 
   const { width: w, height: h } = src;
-  const tmp = new Float32Array(w * h);
   const out = createFloat(w, h);
   const s = src.data;
-  for (let y = 0; y < h; y++) {
+  // Horizontally blurred rows are only needed within r of the output row, so
+  // they live in a ring of 2r + 1 rows (row y in slot y mod 2r + 1) rather
+  // than a second full-size image.
+  const slots = 2 * r + 1;
+  const ring = new Float32Array(slots * w);
+  let ready = 0;
+  const blurRow = (y: number) => {
     const off = y * w;
+    const dst = (y % slots) * w;
     for (let x = 0; x < w; x++) {
       let acc = 0;
       if (x >= r && x < w - r) {
@@ -89,19 +105,18 @@ export function gaussian(src: FloatImage, sigma: number): FloatImage {
       } else {
         for (let k = -r; k <= r; k++) acc += s[off + reflect(x + k, w)] * kernel[k + r];
       }
-      tmp[off + x] = acc;
+      ring[dst + x] = acc;
     }
-  }
+  };
   const o = out.data;
+  const taps = new Int32Array(slots);
   for (let y = 0; y < h; y++) {
-    const interior = y >= r && y < h - r;
+    // Every row read below lies in max(0, y - r)..min(h - 1, y + r).
+    for (const last = Math.min(h - 1, y + r); ready <= last; ready++) blurRow(ready);
+    for (let k = -r; k <= r; k++) taps[k + r] = (reflect(y + k, h) % slots) * w;
     for (let x = 0; x < w; x++) {
       let acc = 0;
-      if (interior) {
-        for (let k = -r; k <= r; k++) acc += tmp[(y + k) * w + x] * kernel[k + r];
-      } else {
-        for (let k = -r; k <= r; k++) acc += tmp[reflect(y + k, h) * w + x] * kernel[k + r];
-      }
+      for (let k = 0; k < slots; k++) acc += ring[taps[k] + x] * kernel[k];
       o[y * w + x] = acc;
     }
   }
@@ -150,6 +165,9 @@ function slidingExtreme(
   }
 }
 
+/** Columns per block in `extremeFilter`'s vertical pass. */
+const EXTREME_BLOCK = 32;
+
 function extremeFilter(src: FloatImage, radius: number, max: boolean): FloatImage {
   const r = Math.max(0, Math.floor(radius));
   const { width: w, height: h } = src;
@@ -159,7 +177,23 @@ function extremeFilter(src: FloatImage, radius: number, max: boolean): FloatImag
   const queue = new Int32Array(Math.max(w, h));
   const values = new Float32Array(Math.max(w, h));
   for (let y = 0; y < h; y++) slidingExtreme(src.data, tmp, y * w, 1, w, r, max, queue, values);
-  for (let x = 0; x < w; x++) slidingExtreme(tmp, out.data, x, w, h, r, max, queue, values);
+  // Columns go through in blocks copied out row by row, so each column is
+  // filtered contiguously instead of reading memory a row apart per step.
+  const block = Math.min(w, EXTREME_BLOCK);
+  const cols = new Float32Array(block * h);
+  const o = out.data;
+  for (let x0 = 0; x0 < w; x0 += block) {
+    const n = Math.min(block, w - x0);
+    for (let y = 0; y < h; y++) {
+      const off = y * w + x0;
+      for (let c = 0; c < n; c++) cols[c * h + y] = tmp[off + c];
+    }
+    for (let c = 0; c < n; c++) slidingExtreme(cols, cols, c * h, 1, h, r, max, queue, values);
+    for (let y = 0; y < h; y++) {
+      const off = y * w + x0;
+      for (let c = 0; c < n; c++) o[off + c] = cols[c * h + y];
+    }
+  }
   return out;
 }
 
