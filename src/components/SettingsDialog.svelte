@@ -2,7 +2,7 @@
   import { listCameras, type CameraDevice } from '../lib/camera/camera';
   import { FILTERS } from '../lib/filters';
   import { isConfigured } from '../lib/paperless';
-  import type { AppSettings, Resolution } from '../lib/settings';
+  import { normalizeServerUrl, type AppSettings, type Resolution } from '../lib/settings';
   import { toast } from '../lib/ui.svelte';
 
   interface Props {
@@ -16,10 +16,12 @@
   let draft = $state<AppSettings | null>(null);
   let tags = $state('');
   let cameras = $state<CameraDevice[]>([]);
+  let urlError = $state<string | null>(null);
 
   export async function open() {
     draft = structuredClone($state.snapshot(settings));
     tags = draft.paperless.tagIds.join(', ');
+    urlError = null;
     dialog?.showModal();
     // Labels exist only after camera permission was granted once.
     const devices = (await listCameras()).filter((d) => d.label.trim());
@@ -31,10 +33,16 @@
 
   function save() {
     if (!draft) return;
+    const checked = normalizeServerUrl(draft.paperless.baseUrl);
+    if (!checked.ok) {
+      urlError = checked.error;
+      return;
+    }
+    urlError = null;
     const next: AppSettings = {
       ...draft,
       paperless: {
-        baseUrl: draft.paperless.baseUrl.trim(),
+        baseUrl: checked.url,
         token: draft.paperless.token.trim(),
         tagIds: tags
           .split(',')
@@ -64,8 +72,8 @@
         <h2>Paperless-ngx</h2>
         <p class="help">
           Paste a REST API token from <em>Profile → API Auth Token</em>. Both values stay in this
-          browser and are sent only to this server. The server must allow this app's origin in
-          <code>PAPERLESS_CORS_ALLOWED_HOSTS</code>.
+          browser and are sent only to this server. The server must use https and allow this app's
+          origin in <code>PAPERLESS_CORS_ALLOWED_HOSTS</code>.
         </p>
         <label class="field">
           <span>Server URL</span>
@@ -75,8 +83,14 @@
             placeholder="https://paperless.example.com"
             autocapitalize="off"
             spellcheck="false"
+            aria-invalid={urlError ? 'true' : undefined}
+            aria-describedby={urlError ? 'server-url-error' : undefined}
+            oninput={() => (urlError = null)}
           />
         </label>
+        {#if urlError}
+          <p class="help error" id="server-url-error" role="alert">{urlError}</p>
+        {/if}
         <label class="field">
           <span>API token</span>
           <input type="password" bind:value={draft.paperless.token} autocomplete="off" />
@@ -183,6 +197,10 @@
     font-size: 12.5px;
     color: var(--muted);
     line-height: 1.5;
+  }
+
+  .help.error {
+    color: var(--err);
   }
 
   code {

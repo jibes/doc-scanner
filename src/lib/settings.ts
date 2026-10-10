@@ -75,3 +75,42 @@ export function saveSettings(settings: AppSettings): void {
     // Storage can be unavailable (private mode, quota); settings are a convenience.
   }
 }
+
+/** Hosts that browsers treat as secure even over plain http. */
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+export type ServerUrlCheck = { ok: true; url: string } | { ok: false; error: string };
+
+/**
+ * Validate and normalise the Paperless server URL: https only (plain http just
+ * for this device), no credentials, query or fragment, no trailing slash. An
+ * empty value is allowed (uploads stay off). Errors never echo the input,
+ * which could hold a password.
+ */
+export function normalizeServerUrl(raw: string): ServerUrlCheck {
+  const value = raw.trim();
+  if (value === '') return { ok: true, url: '' };
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return { ok: false, error: 'Enter the full address, starting with https://' };
+  }
+  const loopback = url.protocol === 'http:' && LOOPBACK.has(url.hostname);
+  if (url.protocol !== 'https:' && !loopback) {
+    return {
+      ok: false,
+      error:
+        url.protocol === 'http:'
+          ? 'Use https://. Browsers block plain http requests from this app as mixed content.'
+          : 'The address must start with https://',
+    };
+  }
+  if (url.username || url.password) {
+    return { ok: false, error: 'Leave the user name and password out of the address.' };
+  }
+  if (url.search || url.hash || value.includes('?') || value.includes('#')) {
+    return { ok: false, error: 'Remove the ? or # part from the address.' };
+  }
+  return { ok: true, url: `${url.origin}${url.pathname.replace(/\/+$/, '')}` };
+}
