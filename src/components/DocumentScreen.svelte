@@ -123,7 +123,7 @@
       const pdf = await build(false);
       busy('Uploading to Paperless…');
       const task = await uploadDocument(settings.paperless, pdf, pdfFilename(title), title);
-      const entry = await recordHistory({
+      const entry = recordHistory({
         title,
         kind: 'upload',
         pages: session.pages.length,
@@ -144,7 +144,7 @@
         return;
       }
       idle();
-      void updateHistory({ ...entry, outcome: result.outcome });
+      void updateHistory({ ...entry, outcome: result.outcome }, { onlyIfPresent: true });
       if (result.outcome === 'failure') {
         haptic('error');
         toast(`Paperless rejected it: ${result.message ?? 'unknown error'}`, 'err');

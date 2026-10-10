@@ -6,6 +6,8 @@ import type { Page } from '../src/lib/store/session.svelte';
 /** A worker that answers at once: export renders, and OCR finding no words. */
 class FakeWorker {
   static all: FakeWorker[] = [];
+  /** Whether OCR workers answer; off to let a test crash one first. */
+  static ocrAnswers = true;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: unknown = null;
   onmessageerror: unknown = null;
@@ -33,7 +35,7 @@ class FakeWorker {
               ? { data: new Uint8ClampedArray(4), width: 2, height: 1 }
               : undefined,
           }
-        : message.type === 'ocr'
+        : message.type === 'ocr' && FakeWorker.ocrAnswers
           ? { type: 'words', id, words: [] }
           : null;
     if (answer) queueMicrotask(() => this.onmessage?.({ data: answer }));
@@ -72,6 +74,7 @@ function cachedModels(files: number) {
 
 beforeEach(() => {
   FakeWorker.all = [];
+  FakeWorker.ocrAnswers = true;
   vi.stubGlobal('Worker', FakeWorker);
   vi.resetModules();
 });
@@ -105,6 +108,25 @@ describe('export cache', () => {
     const encoded = await cache.encodedPage(page, DEFAULT_SETTINGS, { text: true });
     expect(await encoded.words).toEqual([]);
     expect(encodes()).toHaveLength(1);
+  });
+
+  it('reads the page again after OCR failed, instead of keeping "no text"', async () => {
+    const cache = await import('../src/lib/exportCache');
+    FakeWorker.ocrAnswers = false;
+    const first = await cache.encodedPage(page, DEFAULT_SETTINGS, { text: true });
+    await vi.waitFor(() => expect(ocrWorkers()).toHaveLength(1));
+    const [reader] = ocrWorkers();
+    // The OCR worker crashes before answering.
+    (reader as unknown as { onerror: (e: object) => void }).onerror({
+      message: 'crashed',
+      preventDefault: () => undefined,
+    });
+    expect(await first.words).toEqual([]);
+    FakeWorker.ocrAnswers = true;
+    const second = await cache.encodedPage(page, DEFAULT_SETTINGS, { text: true });
+    expect(second.words).not.toBeNull();
+    expect(await second.words).toEqual([]);
+    expect(encodes()).toHaveLength(2);
   });
 
   it('closes the OCR worker after a minute unused', async () => {

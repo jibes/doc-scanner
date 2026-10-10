@@ -80,6 +80,31 @@ describe('storage', () => {
     expect((await db.loadPages())?.map((p) => p.id)).toEqual(['a']);
   });
 
+  it('reports a write as failed when storage never answers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.spyOn(indexedDB, 'open').mockImplementation(() => ({}) as IDBOpenDBRequest);
+    const db = await import('../src/lib/store/db');
+    const write = db.putPage(stored('a', 0));
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(await write).toBe(false);
+  });
+
+  it('says so when another tab blocks the upgrade, and fails writes in time', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const blocker = await oldTabWith([]);
+    const db = await import('../src/lib/store/db');
+    const blocked = vi.fn();
+    db.whenBlocked(blocked);
+    const write = db.putPage(stored('a', 0));
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(blocked).toHaveBeenCalledTimes(1);
+    expect(await write).toBe(false);
+    // Still waiting on the other tab, not given up: once it closes, saving works.
+    blocker.close();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await db.putPage(stored('b', 0))).toBe(true);
+  });
+
   it('tells "storage did not answer" apart from "nothing saved"', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const db = await import('../src/lib/store/db');
@@ -312,5 +337,17 @@ describe('undo', () => {
     undo();
     expect(session.pages.map((p) => p.spec.filter)).toEqual(['color', 'bw']);
     expect(session.get(a.id)?.spec.rotation).toBe(1);
+  });
+
+  it('keeps a filter chosen after applying one to all when undoing', async () => {
+    const { session } = await import('../src/lib/store/session.svelte');
+    await session.restore();
+    const a = session.add(newPage());
+    const b = session.add(newPage());
+    const undo = session.applyToAll({ filter: 'document' } as Pick<PageSpec, 'filter'>);
+    session.update(b.id, { filter: 'gray' } as Partial<PageSpec>);
+    undo();
+    expect(session.get(a.id)?.spec.filter).toBe('color');
+    expect(session.get(b.id)?.spec.filter).toBe('gray');
   });
 });

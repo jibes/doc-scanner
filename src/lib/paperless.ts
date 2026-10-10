@@ -150,7 +150,12 @@ export async function checkTask(config: PaperlessConfig, taskId: string): Promis
     : list && typeof list === 'object' && Array.isArray((list as { results?: unknown }).results)
       ? (list as { results: unknown[] }).results
       : [];
-  const task = items[0];
+  // Only this upload's task: a server that ignores the filter must not
+  // report another document's outcome.
+  const task = items.find(
+    (item) =>
+      item && typeof item === 'object' && (item as { task_id?: unknown }).task_id === taskId,
+  );
   return taskResult(
     task && typeof task === 'object' ? (task as Record<string, unknown>) : undefined,
   );

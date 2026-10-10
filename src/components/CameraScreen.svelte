@@ -62,8 +62,24 @@
   let torchAvailable = $state(false);
   let torchOn = $state(false);
   let detectorState = $state<'loading' | 'ready' | 'failed'>('loading');
-  /** One client per visit: a detector that dies is retried next time the camera opens. */
-  const pageDetector = detector();
+  /**
+   * The detector in use. One that dies is replaced when the camera is opened
+   * or comes back to the foreground, not in a loop while it keeps failing.
+   */
+  let pageDetector = detector();
+
+  function connectDetector() {
+    const client = detector();
+    pageDetector = client;
+    detectorState = 'loading';
+    client.ready
+      .then(() => {
+        if (pageDetector === client) detectorState = 'ready';
+      })
+      .catch(() => {
+        if (pageDetector === client) detectorState = 'failed';
+      });
+  }
   let quad = $state.raw<Quad | null>(null);
   let steady = $state(0);
   let capturing = $state(false);
@@ -170,6 +186,7 @@
     } else if (hidden) {
       hidden = false;
       void startCamera();
+      if (pageDetector.dead) connectDetector();
     }
   }
 
@@ -177,9 +194,7 @@
     hidden = document.visibilityState === 'hidden';
     if (!hidden) void startCamera();
     document.addEventListener('visibilitychange', visibilityChanged);
-    pageDetector.ready
-      .then(() => (detectorState = 'ready'))
-      .catch(() => (detectorState = 'failed'));
+    connectDetector();
     void detectLoop();
     let frame = requestAnimationFrame(function animate(time) {
       animateOutline(time);

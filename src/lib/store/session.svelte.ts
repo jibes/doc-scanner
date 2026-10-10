@@ -10,6 +10,7 @@ import {
   putPage,
   putRecords,
   requestPersistence,
+  whenBlocked,
   saveTitle,
   type PageRecord,
 } from './db';
@@ -35,6 +36,8 @@ function newId(): string {
  * is a handful of small writes rather than one per tick.
  */
 const SAVE_DELAY_MS = 300;
+/** After a failed save, try again this much later. */
+const RETRY_DELAY_MS = 10_000;
 
 function toRecord(page: Page, order: number): PageRecord {
   return {
@@ -91,7 +94,13 @@ class Session {
    */
   private async recover(): Promise<void> {
     const stored = await loadPages(true);
-    if (!stored) return;
+    if (!stored) {
+      toast(
+        'Saved pages could not be opened, and new ones will not be kept. Export before closing the app.',
+        'err',
+      );
+      return;
+    }
     const saved = stored.filter((p) => !this.get(p.id)).map(fromStored);
     this.restored = true;
     if (saved.length > 0) {
@@ -117,7 +126,13 @@ class Session {
    */
   private generation = 0;
 
+  /** Pages whose photo could not be saved; tried again with the next save. */
+  private unsavedPhotos = new Set<string>();
+
   constructor() {
+    whenBlocked(() =>
+      toast('Close the app’s other tabs or windows so it can open your saved pages.', 'info'),
+    );
     // The app may be killed in the background without another event.
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
@@ -137,15 +152,21 @@ class Session {
   private persist(page: Page): void {
     const order = this.pages.findIndex((p) => p.id === page.id);
     this.dirty.delete(page.id);
-    void putPage({ ...toRecord(page, order), source: page.source }).then((saved) =>
-      this.reportSaved(saved),
-    );
+    this.unsavedPhotos.delete(page.id);
+    void putPage({ ...toRecord(page, order), source: page.source }).then((saved) => {
+      // Only if nothing newer has been saved for this page since.
+      if (!saved && this.get(page.id)?.source === page.source) {
+        this.unsavedPhotos.add(page.id);
+        this.touch([], RETRY_DELAY_MS);
+      }
+      this.reportSaved(saved);
+    });
   }
 
   /** Save these pages' metadata (spec, position) soon, without their photos. */
-  private touch(ids: Iterable<string>): void {
+  private touch(ids: Iterable<string>, delay = SAVE_DELAY_MS): void {
     for (const id of ids) this.dirty.add(id);
-    this.saveTimer ??= setTimeout(() => this.flush(), SAVE_DELAY_MS);
+    this.saveTimer ??= setTimeout(() => this.flush(), delay);
   }
 
   private persistOrder(): void {
@@ -156,13 +177,27 @@ class Session {
   flush(): void {
     clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
+    for (const id of this.unsavedPhotos) {
+      const page = this.get(id);
+      if (page) this.persist(page);
+      else this.unsavedPhotos.delete(id);
+    }
     if (this.dirty.size === 0) return;
     const records: PageRecord[] = [];
     this.pages.forEach((page, order) => {
       if (this.dirty.has(page.id)) records.push(toRecord(page, order));
     });
+    const ids = records.map((r) => r.id);
     this.dirty.clear();
-    void putRecords(records).then((saved) => this.reportSaved(saved));
+    void putRecords(records).then((saved) => {
+      // Keep them for the next save rather than losing the edits.
+      if (!saved)
+        this.touch(
+          ids.filter((id) => this.get(id)),
+          RETRY_DELAY_MS,
+        );
+      this.reportSaved(saved);
+    });
   }
 
   add(page: Omit<Page, 'id'>): Page {
@@ -256,12 +291,21 @@ class Session {
         adjustments: spec.adjustments ? { ...spec.adjustments } : p.spec.adjustments,
       },
     }));
+    // Undo restores a page only where its filter and adjustments are still
+    // the ones applied here (adjustments are replaced, never mutated), so
+    // edits made since are kept.
+    const applied = new Map(
+      this.pages.map((p) => [p.id, { filter: p.spec.filter, adjustments: p.spec.adjustments }]),
+    );
     this.persistOrder();
     return () => {
       if (this.generation !== generation) return;
       this.pages = this.pages.map((p) => {
         const old = before.get(p.id);
-        return old ? { ...p, spec: { ...p.spec, ...old } } : p;
+        const set = applied.get(p.id);
+        const unchanged =
+          set && p.spec.filter === set.filter && p.spec.adjustments === set.adjustments;
+        return old && unchanged ? { ...p, spec: { ...p.spec, ...old } } : p;
       });
       this.persistOrder();
     };
@@ -288,6 +332,7 @@ class Session {
     clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
     this.dirty.clear();
+    this.unsavedPhotos.clear();
     // Saved pages that were never restored were never seen: keep them.
     if (this.restored) void clearPages();
     else void deletePages(this.pages.map((p) => p.id));

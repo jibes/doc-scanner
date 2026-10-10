@@ -116,8 +116,8 @@ describe('pollTask', () => {
       () => new Response('not json'),
       () => new Response('', { status: 502 }),
       () => json([]),
-      () => json([{ status: 'STARTED' }]),
-      () => json([{ status: 'SUCCESS' }]),
+      () => json([{ task_id: 't', status: 'STARTED' }]),
+      () => json([{ task_id: 't', status: 'SUCCESS' }]),
     ];
     vi.stubGlobal('fetch', async () => answers.shift()!());
     const c = clock();
@@ -129,7 +129,7 @@ describe('pollTask', () => {
   });
 
   it('gives up as pending after the time limit', async () => {
-    vi.stubGlobal('fetch', async () => json([{ status: 'STARTED' }]));
+    vi.stubGlobal('fetch', async () => json([{ task_id: 't', status: 'STARTED' }]));
     const c = clock();
     const result = await pollTask(config, 't', { sleep: c.sleep, now: c.now });
     expect(result.outcome).toBe('pending');
@@ -147,9 +147,25 @@ describe('pollTask', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores tasks other than its own', async () => {
+    vi.stubGlobal('fetch', async () =>
+      json([
+        { task_id: 'other', status: 'FAILURE', result: 'Bad PDF' },
+        { task_id: 't', status: 'SUCCESS' },
+      ]),
+    );
+    expect((await checkTask(config, 't')).outcome).toBe('success');
+  });
+
   it('reports a duplicate', async () => {
     vi.stubGlobal('fetch', async () =>
-      json([{ status: 'FAILURE', result: 'Not consuming a.pdf: It is a duplicate of b (#3)' }]),
+      json([
+        {
+          task_id: 't',
+          status: 'FAILURE',
+          result: 'Not consuming a.pdf: It is a duplicate of b (#3)',
+        },
+      ]),
     );
     const c = clock();
     const result = await pollTask(config, 't', { sleep: c.sleep, now: c.now });
@@ -162,7 +178,7 @@ describe('waitForTask', () => {
     vi.useFakeTimers();
     try {
       vi.stubGlobal('fetch', async () =>
-        json([{ status: 'FAILURE', result: 'It is a duplicate of b (#3)' }]),
+        json([{ task_id: 't', status: 'FAILURE', result: 'It is a duplicate of b (#3)' }]),
       );
       const promise = waitForTask(config, 't');
       await vi.advanceTimersByTimeAsync(2000);

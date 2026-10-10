@@ -82,12 +82,22 @@
       );
       // Stored before waiting, so a later visit can look the result up.
       const sent: HistoryEntry = { ...entry, kind: 'upload', outcome: 'pending', taskId };
-      await updateHistory(sent);
+      void updateHistory(sent);
       replace(sent);
       busy('Paperless is processing it…');
-      const result = await pollTask(settings.paperless, taskId);
+      let result: Awaited<ReturnType<typeof pollTask>>;
+      try {
+        result = await pollTask(settings.paperless, taskId);
+      } catch (error) {
+        // The file is in Paperless; only its status could not be read. The
+        // entry stays pending and is checked again on the next visit.
+        toast(`Uploaded, but its status could not be checked: ${errorMessage(error)}`, 'info');
+        return;
+      }
+      // Removed from history while waiting: leave it removed.
+      if (!entries.some((e) => e.id === entry.id)) return;
       const updated: HistoryEntry = { ...sent, outcome: storedOutcome(result.outcome) };
-      await updateHistory(updated);
+      void updateHistory(updated, { onlyIfPresent: true });
       replace(updated);
       if (result.outcome === 'failure') {
         haptic('error');
