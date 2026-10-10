@@ -91,8 +91,8 @@ const FADED_TARGET = 0.3;
 const FADED_GAIN = 4;
 /** B&W: smoothing of a picture's smooth tones (fraction of the long edge) before its threshold. */
 const PICTURE_SMOOTH = 0.003;
-/** B&W: specks in a thresholded picture smaller than this (fraction of the long edge, squared) are noise. */
-const PICTURE_SPECK = 0.0012;
+/** Pixels of a flat colour area within this (0..255, any channel) of its colour become exactly that colour. */
+const FILL_SNAP = 24;
 /** Paper saturation up to which a warm tint is taken for the light, and any other tint. */
 const WARM_CAST_MAX = 0.22;
 const OTHER_CAST_MAX = 0.05;
@@ -178,11 +178,11 @@ function enhanceColor(
   const { white, black } = tonePoints(luma, adj);
   const out = createRGBA(flat.width, flat.height);
   const sat = 1.15;
-  const curve = (whitePoint: number) => {
+  const curve = (blackPoint: number, whitePoint: number) => {
     const lut = new Float32Array(256);
-    const scale = 1 / (whitePoint - black);
+    const scale = 1 / (whitePoint - blackPoint);
     for (let v = 0; v < 256; v++) {
-      const t = Math.min(1, Math.max(0, (v / 255 - black) * scale));
+      const t = Math.min(1, Math.max(0, (v / 255 - blackPoint) * scale));
       // A gentle S-curve on top of the levels keeps mid-tones from going muddy.
       const s = t * t * (3 - 2 * t);
       lut[v] = 255 * (0.7 * t + 0.3 * s);
@@ -192,9 +192,11 @@ function enhanceColor(
   // Paper is pushed to white well before its nominal 1.0, so its noise and
   // leftover shading vanish. Photos and colour areas are not paper: there
   // the same push would bleach light colours (a peach panel turning pale
-  // yellow as its green channel clips), so they get the full range.
-  const lut = curve(white);
-  const pictureLut = curve(Math.max(white, Math.min(1, 1 - adj.brightness * 0.07)));
+  // yellow as its green channel clips), and the black point set by the ink
+  // would crush dark ones (a navy band turning black), so they get nearly
+  // the full range.
+  const lut = curve(black, white);
+  const pictureLut = curve(black / 2, Math.max(white, Math.min(1, 1 - adj.brightness * 0.07)));
   const pw = picture?.data;
   for (let i = 0, p = 0; i < luma.data.length; i++, p += 4) {
     const w = pw ? pw[i] : 0;
@@ -581,34 +583,58 @@ export function applyFilter(
     // edge, so cutting it at one half keeps the printed stroke width. Photos
     // and colour areas get one fixed threshold on their tone instead (a
     // two-tone picture, with dark lettering on light grounds and light
-    // lettering on dark ones), minus the specks that noise leaves where a
-    // smooth tone sits right at the threshold.
+    // lettering on dark ones).
     const dark = new Uint8Array(ink.length);
     for (let i = 0; i < ink.length; i++) dark[i] = ink[i] < 0.5 ? 1 : 0;
     if (picture) {
-      // Smooth tones are judged on a well smoothed copy (noise would put
-      // specks all along a tone that sits at the threshold), detail such as
-      // lettering on the barely smoothed one.
-      const pictureLuma = toLuma(flat);
-      const sharp = boxMean(pictureLuma, 1).data;
-      const smooth = boxMean(
-        pictureLuma,
-        Math.max(2, Math.round(longEdge(src) * PICTURE_SMOOTH)),
-      ).data;
-      const inPicture = new Uint8Array(ink.length);
-      for (let i = 0; i < ink.length; i++) {
-        if (picture.data[i] <= 0.5) continue;
-        inPicture[i] = 1;
-        const v = Math.abs(sharp[i] - smooth[i]) > 0.12 ? sharp[i] : smooth[i];
-        dark[i] = v < 0.5 ? 1 : 0;
+      // Only the part of the page the pictures cover is worked on.
+      const { width } = src;
+      let x0 = width;
+      let y0 = src.height;
+      let x1 = -1;
+      let y1 = -1;
+      for (let y = 0; y < src.height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (picture.data[y * width + x] <= 0.5) continue;
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
       }
-      const speck = Math.max(2, Math.round((longEdge(src) * PICTURE_SPECK) ** 2));
-      for (const value of [1, 0]) {
-        const mask = new Uint8Array(ink.length);
-        for (let i = 0; i < ink.length; i++) mask[i] = inPicture[i] && dark[i] === value ? 1 : 0;
-        const { labels, areas } = labelComponents(mask, src.width, src.height);
-        for (let i = 0; i < ink.length; i++) {
-          if (mask[i] && areas[labels[i]] < speck) dark[i] = 1 - value;
+      const cw = x1 - x0 + 1;
+      const ch = y1 - y0 + 1;
+      if (cw > 0 && ch > 0) {
+        // Smooth tones are judged on a well smoothed copy (noise would put
+        // specks all along a tone that sits at the threshold), detail such as
+        // lettering on the barely smoothed one.
+        const crop = createFloat(cw, ch);
+        for (let y = 0; y < ch; y++) {
+          for (let x = 0, p = ((y + y0) * width + x0) * 4; x < cw; x++, p += 4) {
+            crop.data[y * cw + x] = luma01(flat.data[p], flat.data[p + 1], flat.data[p + 2]);
+          }
+        }
+        const sharp = boxMean(crop, 1).data;
+        const smooth = boxMean(crop, Math.max(2, Math.round(longEdge(src) * PICTURE_SMOOTH))).data;
+        const votes = createFloat(cw, ch);
+        for (let y = 0; y < ch; y++) {
+          for (let x = 0; x < cw; x++) {
+            const k = y * cw + x;
+            const i = (y + y0) * width + x + x0;
+            if (picture.data[i] > 0.5) {
+              const v = Math.abs(sharp[k] - smooth[k]) > 0.12 ? sharp[k] : smooth[k];
+              dark[i] = v < 0.5 ? 1 : 0;
+            }
+            votes.data[k] = dark[i];
+          }
+        }
+        // A majority vote over 3x3 clears the remaining isolated specks.
+        const share = boxMean(votes, 1).data;
+        for (let y = 0; y < ch; y++) {
+          for (let x = 0; x < cw; x++) {
+            const i = (y + y0) * width + x + x0;
+            if (picture.data[i] > 0.5) dark[i] = share[y * cw + x] > 0.5 ? 1 : 0;
+          }
         }
       }
     }
@@ -642,14 +668,91 @@ export function applyFilter(
   for (let i = 0; i < weight.data.length && !hasColor; i++) hasColor = weight.data[i] > 0;
   if (!hasColor) return out;
   const color = enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, false, picture);
+  const fills = picture ? flatFills(analysis, color, picture) : null;
+  const { cols, rows, block } = analysis.surface;
+  const cd = color.data;
   for (let i = 0, p = 0; i < ink.length; i++, p += 4) {
     const w = picture ? Math.max(weight.data[i], picture.data[i]) : weight.data[i];
     if (w <= 0) continue;
-    od[p] += (color.data[p] - od[p]) * w;
-    od[p + 1] += (color.data[p + 1] - od[p + 1]) * w;
-    od[p + 2] += (color.data[p + 2] - od[p + 2]) * w;
+    let r = cd[p];
+    let g = cd[p + 1];
+    let b = cd[p + 2];
+    if (fills) {
+      const x = i % src.width;
+      const y = (i - x) / src.width;
+      const id =
+        analysis.regionIds[
+          Math.min(rows - 1, Math.floor(y / block)) * cols +
+            Math.min(cols - 1, Math.floor(x / block))
+        ];
+      if (id && fills[id * 3] >= 0) {
+        const fr = fills[id * 3];
+        const fg = fills[id * 3 + 1];
+        const fb = fills[id * 3 + 2];
+        if (Math.max(Math.abs(r - fr), Math.abs(g - fg), Math.abs(b - fb)) <= FILL_SNAP) {
+          r = fr;
+          g = fg;
+          b = fb;
+        }
+      }
+    }
+    od[p] += (r - od[p]) * w;
+    od[p + 1] += (g - od[p + 1]) * w;
+    od[p + 2] += (b - od[p + 2]) * w;
   }
   return out;
+}
+
+/**
+ * The colour of every flat content area (a colour panel, a band, a tint),
+ * RGB per area id, -1 where there is none. A robust mean: the lettering on
+ * the area is left out by narrowing the tolerance around the mean in two
+ * steps. Snapping the area's noisy pixels to it makes the fill one clean
+ * colour, which also keeps the losslessly stored Document page small.
+ */
+function flatFills(
+  analysis: PaperAnalysis,
+  color: RGBAImage,
+  picture: FloatImage,
+): Float32Array | null {
+  const { regionIds, flat } = analysis;
+  if (!flat.some((f) => f === 1)) return null;
+  const { cols, rows, block } = analysis.surface;
+  const { width, height, data } = color;
+  const fill = new Float32Array(flat.length * 3).fill(-1);
+  for (const tolerance of [Infinity, 4 * FILL_SNAP, 2 * FILL_SNAP]) {
+    const sums = new Float64Array(flat.length * 4);
+    for (let y = 0; y < height; y += 2) {
+      const row = Math.min(rows - 1, Math.floor(y / block)) * cols;
+      for (let x = 0; x < width; x += 2) {
+        const i = y * width + x;
+        if (picture.data[i] < 0.99) continue;
+        const id = regionIds[row + Math.min(cols - 1, Math.floor(x / block))];
+        if (!id || !flat[id]) continue;
+        const p = i * 4;
+        if (
+          tolerance < Infinity &&
+          Math.max(
+            Math.abs(data[p] - fill[id * 3]),
+            Math.abs(data[p + 1] - fill[id * 3 + 1]),
+            Math.abs(data[p + 2] - fill[id * 3 + 2]),
+          ) > tolerance
+        ) {
+          continue;
+        }
+        sums[id * 4] += data[p];
+        sums[id * 4 + 1] += data[p + 1];
+        sums[id * 4 + 2] += data[p + 2];
+        sums[id * 4 + 3]++;
+      }
+    }
+    for (let id = 1; id < flat.length; id++) {
+      const count = sums[id * 4 + 3];
+      if (!count) continue;
+      for (let c = 0; c < 3; c++) fill[id * 3 + c] = Math.round(sums[id * 4 + c] / count);
+    }
+  }
+  return fill;
 }
 
 /** Whether a filter's output is greyscale, so the PDF can store one channel. */
