@@ -18,18 +18,18 @@ Paperless server, and it keeps working offline after the first visit.
 
 ## How it works
 
-| Stage      | What happens                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Detect     | [DocAligner](https://github.com/DocsaidLab/DocAligner) LC100 (4.8 MB ONNX, heatmap regression) runs on the live preview via ONNX Runtime Web. About 0.99 Jaccard on SmartDoc 2015.                                                                                                                                                                                             |
-| Capture    | Full-sensor still via ImageCapture where available (Android Chrome), else the video frame. Auto-capture fires after ~1 s of a steady, confident detection. "Hold still…" shows while the photo is taken; the flash and buzz mean it is done. Blurred captures are detected (edge strength against a slightly blurred copy, worst of four directions) and flagged for a retake. |
-| Refine     | The model's corners (from a 256 px thumbnail) are snapped to the real paper edges at 1600 px: gradient search along each side's normal, sub-pixel peak, robust line fit, intersection. Typically 11 px → 1 px of error.                                                                                                                                                        |
-| Proportion | Edge lengths in a photo are foreshortened, so pages shot at an angle would rectify too short. The camera's focal length is recovered from the quad's vanishing points (Zhang & He, 2007) to get the true aspect ratio; a tilted A4 comes out at 1 : 1.414.                                                                                                                     |
-| Rectify    | Perspective warp with Catmull-Rom bicubic sampling (no softening when enlarging) and a box prefilter when shrinking (no aliasing).                                                                                                                                                                                                                                             |
-| Flatten    | A paper-colour surface from a morphological closing (which wipes out ink but keeps the paper's own shading) follows wrinkles, creases and hand shadows; a coarse per-block estimate guards against large dark content. Dividing by it removes shadows and colour casts with no grey halos around text.                                                                         |
-| Filter     | See below.                                                                                                                                                                                                                                                                                                                                                                     |
-| Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                                                                                                                                          |
-| Read       | Optional, for saved PDFs: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) PP-OCRv5 text detection (4.7 MB) and Latin recognition (7.8 MB) in a worker. Words go into an invisible text layer positioned over the image, so the PDF is searchable and copyable. Runs in the background while you review the pages; "Save without text" skips the wait.                   |
-| Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                                                                                                                                                   |
+| Stage      | What happens                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Detect     | [DocAligner](https://github.com/DocsaidLab/DocAligner) LC100 (4.8 MB ONNX, heatmap regression) runs on the live preview via ONNX Runtime Web. About 0.99 Jaccard on SmartDoc 2015.                                                                                                                                                                                               |
+| Capture    | Full-sensor still via ImageCapture where available (Android Chrome), else the video frame. Auto-capture fires after ~1 s of a steady, confident detection. "Hold still…" shows while the photo is taken; the flash and buzz mean it is done. Blurred captures are detected (edge strength against a slightly blurred copy, worst of four directions) and flagged for a retake.   |
+| Refine     | The model's corners (from a 256 px thumbnail) are snapped to the real paper edges at 1600 px: gradient search along each side's normal, sub-pixel peak, robust line fit, intersection. Typically 11 px → 1 px of error.                                                                                                                                                          |
+| Proportion | Edge lengths in a photo are foreshortened, so pages shot at an angle would rectify too short. The camera's focal length is recovered from the quad's vanishing points (Zhang & He, 2007) to get the true aspect ratio; a tilted A4 comes out at 1 : 1.414.                                                                                                                       |
+| Rectify    | Perspective warp with Catmull-Rom bicubic sampling (no softening when enlarging) and a box prefilter when shrinking (no aliasing).                                                                                                                                                                                                                                               |
+| Flatten    | A paper-colour surface from a morphological closing (which wipes out ink but keeps the paper's own shading) follows wrinkles, creases and hand shadows; crisp edges separate photos, colour panels and bands from the paper, and the surface under them is filled in from the paper around them. Dividing by it removes shadows and colour casts with no grey halos around text. |
+| Filter     | See below.                                                                                                                                                                                                                                                                                                                                                                       |
+| Export     | One PDF, page size inferred from the shape (A4 / Letter / Legal, else 300 dpi). Clean pages are stored losslessly (Flate), photographic ones as JPEG.                                                                                                                                                                                                                            |
+| Read       | Optional, for saved PDFs: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) PP-OCRv5 text detection (4.7 MB) and Latin recognition (7.8 MB) in a worker. Words go into an invisible text layer positioned over the image, so the PDF is searchable and copyable. Runs in the background while you review the pages; "Save without text" skips the wait.                     |
+| Upload     | `POST /api/documents/post_document/` with title and tags, then the ingest task is polled until OCR finishes.                                                                                                                                                                                                                                                                     |
 
 ### Filters that do not blur or fatten
 
@@ -50,6 +50,20 @@ only the one or two pixels that straddle an edge keep a proportional grey.
 
 Around that:
 
+- **Paper, shadows and printed areas told apart.** The paper surface comes
+  from a morphological closing of a ~1200 px copy, which wipes out ink but
+  keeps the paper's own shading. Crisp edges in it (a printed area ends as
+  sharply as the lens draws it; shading changes gradually) cut it into
+  regions. The paper is the large, bright, nearly neutral region; regions
+  with the paper's colour where they are (paper beyond a band, white
+  lettering) and hard-edged shadows (the paper's colour, evenly darker,
+  smooth) count as paper too. Everything else (photos, colour panels,
+  header bands, tints) is content: the surface under it is filled in from
+  the paper around it, so dividing by the surface removes shadows and casts
+  from the paper but leaves those areas as printed, not whitened into
+  patches. At a hard shadow edge the surface steps on the lit side, where an
+  error only clips paper to white, never on the shadowed side, where it
+  would draw a dark line.
 - **Contour smoothing before the threshold.** A sub-pixel Gaussian, scaled to
   the camera's pixel size, removes the wobble that sensor noise and JPEG
   blocks put into glyph outlines. The ramp re-sharpens every edge.
@@ -59,29 +73,62 @@ Around that:
 - **Solid shapes stay solid, tints go white.** Anything clearly dark is ink,
   so filled logos are not hollowed out; a light tint fills its own
   surroundings, so it does not turn into a black block.
+- **Faded print is strengthened, not dropped.** When even the darkest print
+  on the page (the ink level over a few words' area) is light grey, the
+  page's contrast is stretched (up to 4×) until it is dark grey, so a washed
+  out copy comes out legible instead of blank. A crease or a speck covers too
+  little area to count as print.
 - **Whole-component cleanup.** Every non-white blob (a glyph plus its
   anti-aliased fringe) is kept or dropped as a unit:
   - dark blobs are kept down to the size of an umlaut dot;
-  - faint blobs are kept only if they are crisp, reasonably dark and thin
-    (grey rules, grey small print), and short faint streaks are dropped:
-    fold, crease and wrinkle shading is light and either broad or fragmented,
-    while printed rules run much further;
-  - slivers of table or page edge along the border are removed;
+  - faint blobs are kept next to dark text, and elsewhere if they are made
+    of strokes (stroke width, from area and outline, stays narrow), crisp for
+    their contrast (a lighter print has gentler edges) and not a short lone
+    streak: fold, crease and wrinkle shading is broad, soft or a single
+    short line, while a grey word's letters each add their own outline;
+  - lines of faint print (a thermal receipt, a grey footer) vouch for the
+    softer, smaller marks among them (punctuation, an l or a 1), as dark text
+    does;
   - slivers along the border are removed only if they touch it or are long
     thin lines, so text close to the edge of a tight crop survives.
 - **Grey stays grey** in the Document filter: a thin grey rule is not turned
-  into a heavy black line. B&W is strictly black and white.
-- **Colour layer.** Saturated, non-paper blobs larger than a speck (logos,
-  stamps, signatures, highlighter) are composited back in colour; chromatic
-  fringes on black text are too small to qualify.
+  into a heavy black line.
+- **B&W is strictly black and white** (two levels, no anti-aliasing): that is
+  what the mode is for, it compresses best, and at 300 dpi the edge is
+  still where the threshold puts it. Photos and colour areas get one fixed
+  threshold on their tone (smoothed on smooth tones, sharp on lettering), so
+  they come out as a clean two-tone picture with legible lettering instead
+  of a hollow outline or noise.
+- **Colour layer.** Photos, colour areas and dark bands found by the paper
+  analysis, and saturated blobs larger than a speck (logos, stamps,
+  signatures, highlighter), are composited from the colour page, so a photo
+  stays photographic and white lettering on a coloured band stays white
+  without a black rim. Pale neutral tints go white with the paper.
+- **Coloured print stays coloured.** A kept glyph or line whose core is
+  clearly coloured (a link, a coloured heading, a thin coloured table rule)
+  is drawn as crisp ink in its own colour. Thin lines mix with the paper in
+  the photo; the test is the colour's purity (chroma over distance from
+  white), which that mixing does not change, and the colour is extended to
+  the blob's darkest point.
 
-| Filter   | Result                                                     |
-| -------- | ---------------------------------------------------------- |
-| Document | Black text on white, colour content kept (default)         |
-| B&W      | Black text on white, everything else too                   |
-| Grey     | Flattened greyscale with clean white paper                 |
-| Colour   | Flattened colour with clean white paper and a levels curve |
-| Original | Perspective correction only                                |
+| Filter   | Result                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------ |
+| Document | Black text on white, colour content, photos and coloured print kept (default)                    |
+| B&W      | Strictly black and white; photos and colour areas as two-tone pictures                           |
+| Grey     | Flattened greyscale with clean white paper; photos as grey photos                                |
+| Colour   | Flattened colour: paper in its own colour (white paper white), shadows and casts removed, levels |
+| Original | Perspective correction only                                                                      |
+
+**Coloured paper.** Document, B&W and Grey turn any paper white: they are for
+reading and archiving text, and a tinted ground only costs contrast and file
+size. Colour keeps the paper's own colour, minus shadows and the light's
+cast. Only the page is seen, and a lamp's cast and a coloured sheet look
+alike, so the rule goes by what light can do: phones white-balance, and what
+is left of a lamp's or the sun's colour lies on the warm (orange to yellow)
+axis and stays moderate. A warm tint therefore counts as the paper's colour
+only when strong (saturation above about 0.22, as yellow paper is), a tint of
+any other hue (blue, green, pink paper) already when mild (above about
+0.05). In between it fades in, so no threshold flips a page abruptly.
 
 Per page you can adjust whiteness, ink depth, text weight (0 keeps the printed
 weight) and sharpening, rotate,
@@ -238,8 +285,11 @@ once.
   straightened as planes.
 - **A-series pages are assumed to be A4** in the PDF page size: A5 and A4 share
   an aspect ratio.
-- **Light colour fills in B&W mode** come out as an outline or a grey texture.
-  The Document filter keeps them in colour instead.
+- **Light colour fills in B&W mode** go white (with their text black): B&W
+  is two-tone. The Document filter keeps them in colour.
+- **A flat, neutral grey print with a crisp edge** looks exactly like a hard
+  shadow, and is flattened white like one. Printed full-page gradients look
+  like uneven light and are flattened too.
 - **iOS Safari has no ImageCapture**, so stills there come from the video
   stream (up to 4K), not the full sensor.
 - **Threads are off.** GitHub Pages cannot send the cross-origin isolation
