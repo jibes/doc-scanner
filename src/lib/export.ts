@@ -1,7 +1,7 @@
 import { pageSizePoints } from './pdf/paper';
 import { buildPdf, type PdfPage } from './pdf/writer';
-import { processor } from './services';
-import { RESOLUTION_LONG_EDGE, type AppSettings } from './settings';
+import { encodedPage } from './exportCache';
+import type { AppSettings } from './settings';
 import type { Page } from './store/session.svelte';
 
 /** Nominal resolution for pages whose shape matches no paper format (receipts). */
@@ -24,18 +24,11 @@ export async function exportPdf(
   title: string,
   onProgress: (done: number, total: number) => void,
 ): Promise<Blob> {
-  const longEdge = RESOLUTION_LONG_EDGE[settings.resolution];
   const out: PdfPage[] = [];
   for (let i = 0; i < pages.length; i++) {
     onProgress(i, pages.length);
     const page = pages[i];
-    const { image, width, height } = await processor().encode({
-      pageId: page.id,
-      source: page.source,
-      spec: page.spec,
-      longEdge,
-      jpegQuality: settings.jpegQuality,
-    });
+    const { image, width, height } = await encodedPage(page, settings);
     const size = pageSizePoints(width, height, FALLBACK_DPI);
     out.push({
       pixelWidth: width,

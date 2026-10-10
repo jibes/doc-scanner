@@ -1,4 +1,5 @@
-import { createRGBA, type RGBAImage } from './image';
+import { boxMean, maxFilter, minFilter } from './box';
+import { createFloat, createRGBA, downsampleBox, type RGBAImage } from './image';
 
 /**
  * Paper-colour estimate on a coarse grid, one RGB sample per block (0..255).
@@ -47,35 +48,40 @@ export function estimatePaper(src: RGBAImage): PaperGrid {
   const luma = new Float32Array(n);
   const step = Math.max(1, Math.floor(block / SAMPLES_PER_BLOCK_EDGE));
 
-  const lumas: number[] = [];
-  const idx: number[] = [];
+  // Per block: a luma histogram of strided samples gives the brightest-10%
+  // cut-off without sorting; then average the colour of the samples above it.
+  const hist = new Uint32Array(256);
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
-      lumas.length = 0;
-      idx.length = 0;
+      hist.fill(0);
+      let samples = 0;
       const x1 = Math.min(width, (bx + 1) * block);
       const y1 = Math.min(height, (by + 1) * block);
       for (let y = by * block; y < y1; y += step) {
         for (let x = bx * block; x < x1; x += step) {
           const p = (y * width + x) * 4;
-          lumas.push(0.2126 * data[p] + 0.7152 * data[p + 1] + 0.0722 * data[p + 2]);
-          idx.push(p);
+          hist[(54 * data[p] + 183 * data[p + 1] + 19 * data[p + 2]) >> 8]++;
+          samples++;
         }
       }
-      const sorted = [...lumas].sort((a, b) => a - b);
-      const threshold =
-        sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * PAPER_QUANTILE))];
+      let threshold = 255;
+      for (let acc = 0, target = samples * (1 - PAPER_QUANTILE); threshold > 0; threshold--) {
+        acc += hist[threshold];
+        if (acc >= target) break;
+      }
       let r = 0;
       let g = 0;
       let b = 0;
       let count = 0;
-      for (let i = 0; i < lumas.length; i++) {
-        if (lumas[i] < threshold) continue;
-        const p = idx[i];
-        r += data[p];
-        g += data[p + 1];
-        b += data[p + 2];
-        count++;
+      for (let y = by * block; y < y1; y += step) {
+        for (let x = bx * block; x < x1; x += step) {
+          const p = (y * width + x) * 4;
+          if ((54 * data[p] + 183 * data[p + 1] + 19 * data[p + 2]) >> 8 < threshold) continue;
+          r += data[p];
+          g += data[p + 1];
+          b += data[p + 2];
+          count++;
+        }
       }
       const k = by * cols + bx;
       rgb[k * 3] = r / count;
@@ -202,7 +208,75 @@ export function estimatePaper(src: RGBAImage): PaperGrid {
  * and everything else keeps its contrast relative to the paper. Per channel,
  * which also removes a colour cast from warm light or yellowed paper.
  */
-export function flattenPaper(src: RGBAImage, grid: PaperGrid = estimatePaper(src)): RGBAImage {
+/** Long edge of the working copy the fine paper surface is computed on. */
+const SURFACE_EDGE = 800;
+/** Closing radius on the working copy, as a fraction of its long edge. */
+const SURFACE_RADIUS = 0.012;
+
+function sampleGrid(grid: PaperGrid, x: number, y: number, c: number): number {
+  const { cols, rows, block, rgb } = grid;
+  const gx = Math.min(cols - 1, Math.max(0, x / block - 0.5));
+  const gy = Math.min(rows - 1, Math.max(0, y / block - 0.5));
+  const x0 = Math.floor(gx);
+  const y0 = Math.floor(gy);
+  const x1 = Math.min(cols - 1, x0 + 1);
+  const y1 = Math.min(rows - 1, y0 + 1);
+  const tx = gx - x0;
+  const ty = gy - y0;
+  const at = (xx: number, yy: number) => rgb[(yy * cols + xx) * 3 + c];
+  return (
+    (at(x0, y0) * (1 - tx) + at(x1, y0) * tx) * (1 - ty) +
+    (at(x0, y1) * (1 - tx) + at(x1, y1) * tx) * ty
+  );
+}
+
+/**
+ * A fine paper-colour surface that follows wrinkles, creases and hand
+ * shadows, not just broad lighting gradients.
+ *
+ * On a ~800 px working copy, each channel gets a morphological closing (a
+ * maximum filter, then a minimum filter): the maximum wipes out ink thinner
+ * than the window, the minimum gives back the paper's own shading. Wrinkle
+ * shadows wider than the window survive it and are divided out; text does not.
+ *
+ * Closing cannot tell a large dark shape (a photo, a logo, a filled box) from
+ * a shadow, so the coarse block estimate acts as a sanity check: where the
+ * fine surface is far darker than the coarse one, the coarse one wins.
+ */
+export function estimatePaperSurface(src: RGBAImage, coarse = estimatePaper(src)): PaperGrid {
+  const factor = Math.max(1, Math.round(Math.max(src.width, src.height) / SURFACE_EDGE));
+  const small = downsampleBox(src, factor);
+  const { width: w, height: h } = small;
+  const radius = Math.max(2, Math.round(Math.max(w, h) * SURFACE_RADIUS));
+  const planes = [0, 1, 2].map((c) => {
+    const plane = createFloat(w, h);
+    for (let i = 0, p = c; i < w * h; i++, p += 4) plane.data[i] = small.data[p];
+    return boxMean(minFilter(maxFilter(plane, radius), radius), Math.max(1, radius >> 1));
+  });
+
+  const rgb = new Float32Array(w * h * 3);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const fx = (x + 0.5) * factor;
+      const fy = (y + 0.5) * factor;
+      const fine = [planes[0].data[i], planes[1].data[i], planes[2].data[i]];
+      const rough = [0, 1, 2].map((c) => sampleGrid(coarse, fx, fy, c));
+      const fineLuma = 0.2126 * fine[0] + 0.7152 * fine[1] + 0.0722 * fine[2];
+      const roughLuma = 0.2126 * rough[0] + 0.7152 * rough[1] + 0.0722 * rough[2];
+      const ratio = fineLuma / Math.max(1, roughLuma);
+      const t = Math.min(1, Math.max(0, (ratio - 0.6) / 0.15));
+      const trust = t * t * (3 - 2 * t);
+      for (let c = 0; c < 3; c++) rgb[i * 3 + c] = trust * fine[c] + (1 - trust) * rough[c];
+    }
+  }
+  return { cols: w, rows: h, block: factor, rgb };
+}
+
+export function flattenPaper(
+  src: RGBAImage,
+  grid: PaperGrid = estimatePaperSurface(src),
+): RGBAImage {
   const { width, height, data } = src;
   const { cols, rows, block, rgb } = grid;
   const out = createRGBA(width, height);

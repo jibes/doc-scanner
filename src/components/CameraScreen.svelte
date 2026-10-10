@@ -395,7 +395,7 @@
       <div class="thumb-slot"></div>
     {:else if lastPage}
       <button class="thumb" onclick={onClose} aria-label="Review {session.pages.length} pages">
-        <PageCanvas page={lastPage} longEdge={200} channel="camera-thumb" class="thumb-canvas" />
+        <PageCanvas page={lastPage} longEdge={520} channel="camera-thumb" class="thumb-canvas" />
         <span class="count">{session.pages.length}</span>
       </button>
     {:else}

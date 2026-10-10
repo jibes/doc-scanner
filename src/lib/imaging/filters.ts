@@ -1,6 +1,6 @@
 import { flattenPaper } from './background';
-import { boxMean, gaussian, minFilter } from './box';
-import { measureBlobs, keepBlobs } from './cleanup';
+import { boxMean, darkClassLevel, gaussian, halve, minFilter, sampleHalf } from './box';
+import { findPunchHoles, keepBlobs, measureBlobs } from './cleanup';
 import { dilate, labelComponents, removeSmallComponents } from './components';
 import { createFloat, createRGBA, toLuma, type FloatImage, type RGBAImage } from './image';
 
@@ -52,6 +52,8 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
 const INK_WINDOW = 0.004;
 /** Window for "darker than its surroundings": a few lines of text. */
 const CONTEXT_WINDOW = 0.012;
+/** Average thickness beyond which a faint blob is shading, not print. */
+const FAINT_THICKNESS = 0.0035;
 /** Faint thin streaks shorter than this are fold or crease shadows. */
 const DASH_LENGTH = 0.06;
 /** Below this ink-to-paper contrast nothing is print. */
@@ -185,12 +187,23 @@ function inkCoverage(
   // A whisker of smoothing at the scale of the camera's noise straightens the
   // wobble that JPEG blocks and sensor noise put into glyph outlines; the
   // ramp below re-sharpens every edge, so nothing ends up soft.
-  const luma = gaussian(toLuma(flat), 0.45 * Math.max(1, ctx.sourceScale) * (1.2 - adj.sharpen));
+  const base = toLuma(flat);
+  const luma = gaussian(base, 0.45 * Math.max(1, ctx.sourceScale) * (1.2 - adj.sharpen));
   const { width, height } = luma;
   const L = longEdge(luma);
   const inkRadius = Math.max(2, Math.round(L * INK_WINDOW));
-  const inkLevel = boxMean(minFilter(luma, inkRadius), inkRadius);
-  const mean = boxMean(luma, Math.max(4, Math.round(L * CONTEXT_WINDOW)));
+  // Smooth fields (ink level, presence, context) are computed at half
+  // resolution: they vary over tens of pixels, and this is 4x cheaper.
+  const half = halve(luma);
+  const halfRadius = Math.max(2, inkRadius >> 1);
+  // Typical stroke darkness nearby; see darkClassLevel for why not the minimum.
+  const inkLevel = darkClassLevel(half, Math.round(halfRadius * 1.5));
+  // Whether there is print here at all: the darkest value nearby, so a
+  // one-pixel rule still counts.
+  // Halved by taking the darkest of each 2x2, so a one-pixel rule is not
+  // diluted with paper first.
+  const presence = boxMean(minFilter(halve(luma, true), halfRadius), halfRadius);
+  const mean = boxMean(half, Math.max(2, Math.round((L * CONTEXT_WINDOW) / 2)));
 
   // Where on the ink-to-paper ramp to cut: 0.5 is the true edge. "Text weight"
   // moves it towards paper (bolder) or towards ink (thinner).
@@ -207,15 +220,18 @@ function inkCoverage(
       out.data[i] = 1;
       continue;
     }
-    const ink = inkLevel.data[i];
+    const x = i % width;
+    const y = (i - x) / width;
+    const ink = sampleHalf(inkLevel, x, y);
     const contrast = 1 - ink;
+    const present = 1 - sampleHalf(presence, x, y) >= MIN_INK_CONTRAST;
     // Too little contrast to be print (fold shadows, tints, paper texture):
     // only genuinely dark pixels count.
-    let t = contrast < MIN_INK_CONTRAST ? darkCut : ink + contrast * cut;
+    let t = present ? ink + contrast * cut : darkCut;
     // Ink is darker than its surroundings. A light tint fills its own
     // neighbourhood, so it fails this and stays white instead of turning
     // into a black block.
-    t = Math.min(t, mean.data[i] - 0.015);
+    t = Math.min(t, sampleHalf(mean, x, y) - 0.015);
     t = Math.min(paperCut, Math.max(darkCut, t));
     const half = Math.min(0.05, Math.max(0.015, contrast * 0.06));
     let c = (v - t) / (2 * half) + 0.5;
@@ -235,10 +251,12 @@ function inkCoverage(
     speck: Math.max(2, Math.round((L * SPECK_EDGE) ** 2)),
     faintMinArea: Math.max(12, Math.round((L * FAINT_EDGE) ** 2)),
     dashMaxLength: L * DASH_LENGTH,
+    faintMaxThickness: Math.max(4, L * FAINT_THICKNESS),
     band,
     // Enlarging the photo softens every edge by the same factor.
     faintMinGradient: 0.15 / Math.max(1, ctx.sourceScale),
   });
+  removePunchHoles(out, luma, band);
   for (let i = 0; i < out.data.length; i++) {
     const l = labels[i];
     if (!l) continue;
@@ -285,6 +303,45 @@ function clearBorderSlivers(mask: Uint8Array, width: number, height: number): vo
 }
 
 /**
+ * Clear punch holes from a coverage map (mutates `out`).
+ *
+ * Holes are found on the darker pixels only: a hole's soft fringe
+ * can touch a neighbouring letter and merge with it into one blob that looks
+ * nothing like a hole. Each hole is then cleared together with the fringe
+ * around its core, leaving any other core blob untouched.
+ */
+function removePunchHoles(out: FloatImage, luma: FloatImage, band: number): void {
+  const { width, height } = out;
+  const core = new Uint8Array(out.data.length);
+  // Hole shadows are grey rather than black, but well clear of the faint
+  // fringe that can bridge a hole to a neighbouring letter. Holes can only
+  // sit near the long edges, so the middle of the page is left out.
+  const portrait = height >= width;
+  const span = portrait ? width : height;
+  const reach = Math.ceil(0.15 * Math.min(width, height));
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const across = portrait ? x : y;
+      if (across > reach && across < span - reach) continue;
+      const i = y * width + x;
+      core[i] = out.data[i] < 0.75 ? 1 : 0;
+    }
+  }
+  const { labels, blobs } = measureBlobs(core, luma, band);
+  const all = new Uint8Array(blobs.length).fill(1);
+  const margin = Math.max(2, Math.round(Math.max(width, height) * 0.001));
+  for (const l of findPunchHoles(blobs, all, width, height)) {
+    const b = blobs[l]!;
+    for (let y = Math.max(0, b.minY - margin); y <= Math.min(height - 1, b.maxY + margin); y++) {
+      for (let x = Math.max(0, b.minX - margin); x <= Math.min(width - 1, b.maxX + margin); x++) {
+        const i = y * width + x;
+        if (labels[i] === l || labels[i] === 0) out.data[i] = 1;
+      }
+    }
+  }
+}
+
+/**
  * Per-pixel weight of colour content in [0, 1]: saturated, not paper, and part
  * of a blob large enough to be a logo, stamp, highlight or signature rather
  * than a chromatic-aberration fringe on black text.
@@ -309,7 +366,7 @@ function colorWeight(flat: RGBAImage): FloatImage {
   const minBlob = Math.max(4, Math.round((longEdge(flat) * COLOR_BLOB_EDGE) ** 2));
   removeSmallComponents(mask, width, height, minBlob);
   clearBorderSlivers(mask, width, height);
-  const grown = dilate(dilate(mask, width, height), width, height);
+  const grown = dilate(mask, width, height, 2);
   for (let i = 0; i < n; i++) if (!grown[i]) weight.data[i] = 0;
   return weight;
 }
@@ -320,7 +377,8 @@ export function applyFilter(
   adj: Adjustments = DEFAULT_ADJUSTMENTS,
   ctx: FilterContext = { sourceScale: 1 },
 ): RGBAImage {
-  if (filter === 'original') return sharpenRGBA(src, adj.sharpen * 0.5, ctx);
+  // Perspective correction only: no sharpening, no tone change.
+  if (filter === 'original') return src;
 
   const flat = flattenPaper(src);
   if (filter === 'color') return enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, false);
@@ -337,9 +395,21 @@ export function applyFilter(
     return out;
   }
 
-  // document: B&W text, colour content composited from the enhanced colour page.
-  const color = enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, false);
+  // document: B&W text, colour content composited from the enhanced colour
+  // page. Most pages have little or no colour, so the colour layer is only
+  // computed when there is some.
   const weight = colorWeight(flat);
+  let hasColor = false;
+  for (let i = 0; i < weight.data.length && !hasColor; i++) hasColor = weight.data[i] > 0;
+  if (!hasColor) {
+    for (let i = 0, p = 0; i < ink.data.length; i++, p += 4) {
+      const v = ink.data[i] * 255;
+      out.data[p] = out.data[p + 1] = out.data[p + 2] = v;
+      out.data[p + 3] = 255;
+    }
+    return out;
+  }
+  const color = enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, false);
   for (let i = 0, p = 0; i < ink.data.length; i++, p += 4) {
     const w = weight.data[i];
     const v = ink.data[i] * 255;

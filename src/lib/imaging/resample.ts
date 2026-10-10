@@ -1,23 +1,13 @@
 import { createRGBA, downsampleBox, type Quad, type RGBAImage } from './image';
-import { applyHomography, homography, quadNaturalSize } from './quad';
-
-/**
- * Catmull-Rom cubic weights for fractional offset t. Catmull-Rom interpolates
- * (passes through the samples), so unlike B-spline or bilinear it does not
- * soften text edges when the page is enlarged.
- */
-function cubicWeights(t: number, w: Float64Array): void {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  w[0] = -0.5 * t3 + t2 - 0.5 * t;
-  w[1] = 1.5 * t3 - 2.5 * t2 + 1;
-  w[2] = -1.5 * t3 + 2 * t2 + 0.5 * t;
-  w[3] = 0.5 * t3 - 0.5 * t2;
-}
+import { homography, quadNaturalSize } from './quad';
 
 /**
  * Rectify `quad` (in source pixel-edge coordinates, so a full-image quad is
  * (0,0)..(width,height)) into a `outWidth x outHeight` image.
+ *
+ * Sampling uses the Catmull-Rom cubic, which interpolates (passes through the
+ * samples), so unlike B-spline or bilinear it does not soften text edges when
+ * the page is enlarged.
  *
  * When the warp would shrink the page by 2x or more, the source is first
  * box-averaged by the integer part of that factor, because a 4x4 kernel cannot
@@ -53,47 +43,61 @@ export function warpQuad(
   const sd = source.data;
   const sw = source.width;
   const sh = source.height;
-  const wx = new Float64Array(4);
-  const wy = new Float64Array(4);
-  const xs = new Int32Array(4);
-  const ys = new Int32Array(4);
+  const [h0, h1, h2, h3, h4, h5, h6, h7, h8] = h;
 
   for (let y = 0; y < outHeight; y++) {
-    for (let x = 0; x < outWidth; x++) {
-      const [ex, ey] = applyHomography(h, x + 0.5, y + 0.5);
+    // Homogeneous source coordinates are linear along an output row, so step
+    // them incrementally instead of evaluating the homography per pixel.
+    const yc = y + 0.5;
+    let nx = h0 * 0.5 + h1 * yc + h2;
+    let ny = h3 * 0.5 + h4 * yc + h5;
+    let nw = h6 * 0.5 + h7 * yc + h8;
+    let o = y * outWidth * 4;
+    for (let x = 0; x < outWidth; x++, nx += h0, ny += h3, nw += h6, o += 4) {
       // Pixel-edge coordinates to pixel-centre coordinates.
-      const fx = ex - 0.5;
-      const fy = ey - 0.5;
+      const fx = nx / nw - 0.5;
+      const fy = ny / nw - 0.5;
       const ix = Math.floor(fx);
       const iy = Math.floor(fy);
-      cubicWeights(fx - ix, wx);
-      cubicWeights(fy - iy, wy);
-      for (let k = 0; k < 4; k++) {
-        const cx = ix - 1 + k;
-        const cy = iy - 1 + k;
-        xs[k] = cx < 0 ? 0 : cx >= sw ? sw - 1 : cx;
-        ys[k] = cy < 0 ? 0 : cy >= sh ? sh - 1 : cy;
-      }
+      const tx = fx - ix;
+      const ty = fy - iy;
 
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      for (let j = 0; j < 4; j++) {
-        const row = ys[j] * sw;
-        const wyj = wy[j];
-        for (let i = 0; i < 4; i++) {
-          const p = (row + xs[i]) * 4;
-          const w = wyj * wx[i];
-          r += sd[p] * w;
-          g += sd[p + 1] * w;
-          b += sd[p + 2] * w;
-        }
+      // Catmull-Rom weights.
+      const tx2 = tx * tx;
+      const tx3 = tx2 * tx;
+      const wx0 = -0.5 * tx3 + tx2 - 0.5 * tx;
+      const wx1 = 1.5 * tx3 - 2.5 * tx2 + 1;
+      const wx2 = -1.5 * tx3 + 2 * tx2 + 0.5 * tx;
+      const wx3 = 0.5 * tx3 - 0.5 * tx2;
+      const ty2 = ty * ty;
+      const ty3 = ty2 * ty;
+      const wy0 = -0.5 * ty3 + ty2 - 0.5 * ty;
+      const wy1 = 1.5 * ty3 - 2.5 * ty2 + 1;
+      const wy2 = -1.5 * ty3 + 2 * ty2 + 0.5 * ty;
+      const wy3 = 0.5 * ty3 - 0.5 * ty2;
+
+      // Clamped tap columns (as byte offsets) and rows.
+      const c0 = (ix - 1 < 0 ? 0 : ix - 1 >= sw ? sw - 1 : ix - 1) * 4;
+      const c1 = (ix < 0 ? 0 : ix >= sw ? sw - 1 : ix) * 4;
+      const c2 = (ix + 1 < 0 ? 0 : ix + 1 >= sw ? sw - 1 : ix + 1) * 4;
+      const c3 = (ix + 2 < 0 ? 0 : ix + 2 >= sw ? sw - 1 : ix + 2) * 4;
+      const r0 = (iy - 1 < 0 ? 0 : iy - 1 >= sh ? sh - 1 : iy - 1) * sw * 4;
+      const r1 = (iy < 0 ? 0 : iy >= sh ? sh - 1 : iy) * sw * 4;
+      const r2 = (iy + 1 < 0 ? 0 : iy + 1 >= sh ? sh - 1 : iy + 1) * sw * 4;
+      const r3 = (iy + 2 < 0 ? 0 : iy + 2 >= sh ? sh - 1 : iy + 2) * sw * 4;
+
+      for (let c = 0; c < 3; c++) {
+        const a0 = r0 + c;
+        const a1 = r1 + c;
+        const a2 = r2 + c;
+        const a3 = r3 + c;
+        const v0 = sd[a0 + c0] * wx0 + sd[a0 + c1] * wx1 + sd[a0 + c2] * wx2 + sd[a0 + c3] * wx3;
+        const v1 = sd[a1 + c0] * wx0 + sd[a1 + c1] * wx1 + sd[a1 + c2] * wx2 + sd[a1 + c3] * wx3;
+        const v2 = sd[a2 + c0] * wx0 + sd[a2 + c1] * wx1 + sd[a2 + c2] * wx2 + sd[a2 + c3] * wx3;
+        const v3 = sd[a3 + c0] * wx0 + sd[a3 + c1] * wx1 + sd[a3 + c2] * wx2 + sd[a3 + c3] * wx3;
+        // Uint8ClampedArray rounds and clamps the cubic overshoot.
+        od[o + c] = v0 * wy0 + v1 * wy1 + v2 * wy2 + v3 * wy3;
       }
-      const o = (y * outWidth + x) * 4;
-      // Uint8ClampedArray rounds and clamps the cubic overshoot.
-      od[o] = r;
-      od[o + 1] = g;
-      od[o + 2] = b;
       od[o + 3] = 255;
     }
   }

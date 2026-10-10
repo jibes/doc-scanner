@@ -1,26 +1,26 @@
 import type { Detection } from '../detect/heatmap';
 import type { Quad } from '../imaging/image';
 import type { PdfImage } from '../pdf/writer';
-import type { PageSpec } from '../pipeline';
 import type {
   DetectorRequest,
   DetectorResponse,
   ProcessorRequest,
   ProcessorResponse,
+  RenderJob,
 } from './protocol';
 
 type Pending<T> = { resolve: (value: T) => void; reject: (error: Error) => void };
 
 /* ------------------------------------------------------------ processor ---- */
 
-interface RenderJob {
-  pageId: string;
-  source: Blob;
-  spec: PageSpec;
-  longEdge: number;
-}
-
 type Distribute<T> = T extends unknown ? Omit<T, 'id'> : never;
+
+export class AbortedError extends Error {
+  constructor() {
+    super('cancelled');
+    this.name = 'AbortedError';
+  }
+}
 
 /**
  * Promise wrapper around the processing worker.
@@ -28,7 +28,8 @@ type Distribute<T> = T extends unknown ? Omit<T, 'id'> : never;
  * Interactive renders go through named channels: each channel has at most one
  * job in the worker and one waiting. A newer request replaces the waiting one
  * (which resolves to null), so dragging a slider never builds a backlog and
- * the last position always gets rendered.
+ * the last position always gets rendered. Any request can be aborted; a job
+ * the worker has not started yet is then skipped.
  */
 export class ProcessorClient {
   private readonly worker = new Worker(new URL('./processor.worker.ts', import.meta.url), {
@@ -47,8 +48,13 @@ export class ProcessorClient {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
-      if (message.type === 'error') pending.reject(new Error(message.message));
-      else pending.resolve(message);
+      if (message.type === 'error') {
+        pending.reject(
+          message.message === 'cancelled' ? new AbortedError() : new Error(message.message),
+        );
+      } else {
+        pending.resolve(message);
+      }
     };
     this.worker.onerror = (event) => {
       const error = new Error(event.message || 'The processing worker crashed');
@@ -57,22 +63,31 @@ export class ProcessorClient {
     };
   }
 
-  private send(request: Distribute<ProcessorRequest>): Promise<ProcessorResponse> {
+  private send(
+    request: Distribute<Exclude<ProcessorRequest, { type: 'cancel' }>>,
+    signal?: AbortSignal,
+  ): Promise<ProcessorResponse> {
+    if (signal?.aborted) return Promise.reject(new AbortedError());
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.worker.postMessage({ ...request, id } as ProcessorRequest);
+      signal?.addEventListener(
+        'abort',
+        () => this.worker.postMessage({ type: 'cancel', id } satisfies ProcessorRequest),
+        { once: true },
+      );
     });
   }
 
-  async render(job: RenderJob): Promise<ImageBitmap> {
-    const response = await this.send({ type: 'render', ...job });
+  async render(job: RenderJob, signal?: AbortSignal): Promise<ImageBitmap> {
+    const response = await this.send({ type: 'render', ...job }, signal);
     if (response.type !== 'bitmap') throw new Error('Unexpected worker response');
     return response.bitmap;
   }
 
-  async rectified(job: RenderJob): Promise<ImageBitmap> {
-    const response = await this.send({ type: 'rectified', ...job });
+  async rectified(job: RenderJob, signal?: AbortSignal): Promise<ImageBitmap> {
+    const response = await this.send({ type: 'rectified', ...job }, signal);
     if (response.type !== 'bitmap') throw new Error('Unexpected worker response');
     return response.bitmap;
   }

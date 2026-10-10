@@ -6,6 +6,7 @@
   import Overlays from './components/Overlays.svelte';
   import PageScreen from './components/PageScreen.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
+  import { pausePrefetch, prefetchExports, resumePrefetch } from './lib/exportCache';
   import { detector } from './lib/services';
   import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
   import { session } from './lib/store/session.svelte';
@@ -32,6 +33,20 @@
     settings = next;
     saveSettings(next);
   }
+
+  // Prepare export renders in the background whenever the document changes,
+  // except while the camera is open: detection needs the CPU then.
+  $effect(() => {
+    const pages = session.pages;
+    const current = $state.snapshot(settings);
+    if (screen.name === 'camera' || !session.loaded) {
+      pausePrefetch();
+      return;
+    }
+    resumePrefetch();
+    const timer = setTimeout(() => prefetchExports(pages, current), 800);
+    return () => clearTimeout(timer);
+  });
 
   // A page can disappear underneath a screen (deleted, document discarded).
   const currentPage = $derived(
