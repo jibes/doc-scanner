@@ -61,12 +61,12 @@ Around that:
   anti-aliased fringe) is kept or dropped as a unit:
   - dark blobs are kept down to the size of an umlaut dot;
   - faint blobs are kept only if they are crisp, reasonably dark and thin
-    (grey rules, grey small print). Fold, crease and wrinkle shading is light,
-    soft and broad, so it goes;
+    (grey rules, grey small print), and short faint streaks are dropped:
+    fold, crease and wrinkle shading is light and either broad or fragmented,
+    while printed rules run much further;
   - slivers of table or page edge along the border are removed;
-  - punch holes are removed when a pair matches ISO 838 geometry (about 6 mm,
-    12 mm from the edge, 80 mm apart) and each other, and stands clear of any
-    text line. A word at the margin is never taken for a hole.
+  - slivers along the border are removed only if they touch it or are long
+    thin lines, so text close to the edge of a tight crop survives.
 - **Grey stays grey** in the Document filter: a thin grey rule is not turned
   into a heavy black line. B&W is strictly black and white.
 - **Colour layer.** Saturated, non-paper blobs larger than a speck (logos,
@@ -185,6 +185,11 @@ once.
 
 ## Limitations
 
+- **Punch holes stay visible.** Automatic removal was tried and taken out: an
+  isolated letter at the margin can match every geometric test a hole
+  matches, and a deleted letter is far worse than a visible hole.
+- **Sharp creases can leave a dark line.** Broad wrinkle shading is removed,
+  but a crease narrower than a thick pen stroke is indistinguishable from ink.
 - **Curled pages are not dewarped.** Book spines and folded receipts are
   straightened as planes.
 - **A-series pages are assumed to be A4** in the PDF page size: A5 and A4 share

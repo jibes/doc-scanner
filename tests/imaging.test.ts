@@ -323,11 +323,6 @@ describe('text fidelity on a camera-blurred page', () => {
     softRect(img, 150, 700, 1100, 702, 120, 1.2);
     // A fold: a faint, soft horizontal shadow band across part of the page.
     softRect(img, 400, 1000, 900, 1004, 175, 6);
-    // Punch-hole shadows: two crescent-ish dark marks 12 mm from the left
-    // edge, about 6 mm across, 80 mm apart (on A4 at this size: x ~ 71 px,
-    // ~34 px across, gap ~ 472 px).
-    softRect(img, 54, 690, 88, 722, 60, 2);
-    softRect(img, 54, 1162, 88, 1194, 60, 2);
     return img;
   }
 
@@ -356,19 +351,6 @@ describe('text fidelity on a camera-blurred page', () => {
   it('removes fold shading', () => {
     for (let x = 420; x < 880; x += 40) expect(px(out, x, 1002)[0]).toBe(255);
   });
-
-  it('removes a pair of punch holes but not a single mark', () => {
-    expect(px(out, 70, 706)[0]).toBe(255);
-    expect(px(out, 70, 1178)[0]).toBe(255);
-    const single = page();
-    // Paint over the second hole: now there is only one, so it is not a hole.
-    for (let y = 1155; y < 1200; y++)
-      for (let x = 45; x < 100; x++) {
-        const p = (y * W + x) * 4;
-        single.data[p] = single.data[p + 1] = single.data[p + 2] = 235;
-      }
-    expect(px(applyFilter(single, 'document'), 70, 706)[0]).toBeLessThan(100);
-  });
 });
 
 describe('low-resolution previews keep every letter', () => {
@@ -396,8 +378,21 @@ describe('low-resolution previews keep every letter', () => {
   });
 });
 
-describe('punch holes never take text with them', () => {
-  it('keeps word-shaped blobs at the margin even at hole spacing', () => {
+describe('text near the page edge and the margins is never removed', () => {
+  it('keeps a line of small text set just inside the bottom edge', () => {
+    // A tightly cropped page: the last line sits within the border band.
+    const W = 2480;
+    const H = 3500;
+    const img = fill(W, H, [235, 235, 235]);
+    for (let i = 0; i < 12; i++) softRect(img, 1800 + i * 28, 3462, 1810 + i * 28, 3484, 25, 1.5);
+    // A full stop.
+    softRect(img, 2150, 3478, 2156, 3484, 25, 1);
+    const out = applyFilter(img, 'document');
+    for (let i = 0; i < 12; i++) expect(px(out, 1805 + i * 28, 3473)[0]).toBeLessThan(60);
+    expect(px(out, 2153, 3481)[0]).toBeLessThan(100);
+  });
+
+  it('keeps word-shaped blobs at the margin, even at punch-hole spacing', () => {
     // Words like "Bei" at a narrow left margin, 80 mm apart on A4: hole-ish
     // position and spacing, but only as tall as a line of text.
     const W = 2480;

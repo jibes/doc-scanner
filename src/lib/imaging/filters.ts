@@ -1,6 +1,6 @@
 import { flattenPaper } from './background';
 import { boxMean, darkClassLevel, gaussian, halve, minFilter, sampleHalf } from './box';
-import { findPunchHoles, keepBlobs, measureBlobs } from './cleanup';
+import { keepBlobs, measureBlobs } from './cleanup';
 import { dilate, labelComponents, removeSmallComponents } from './components';
 import { createFloat, createRGBA, toLuma, type FloatImage, type RGBAImage } from './image';
 
@@ -55,7 +55,7 @@ const CONTEXT_WINDOW = 0.012;
 /** Average thickness beyond which a faint blob is shading, not print. */
 const FAINT_THICKNESS = 0.0035;
 /** Faint thin streaks shorter than this are fold or crease shadows. */
-const DASH_LENGTH = 0.06;
+const DASH_LENGTH = 0.15;
 /** Below this ink-to-paper contrast nothing is print. */
 const MIN_INK_CONTRAST = 0.2;
 /** Faint blobs with an area below this length squared are noise. */
@@ -256,7 +256,6 @@ function inkCoverage(
     // Enlarging the photo softens every edge by the same factor.
     faintMinGradient: 0.15 / Math.max(1, ctx.sourceScale),
   });
-  removePunchHoles(out, luma, band);
   for (let i = 0; i < out.data.length; i++) {
     const l = labels[i];
     if (!l) continue;
@@ -299,45 +298,6 @@ function clearBorderSlivers(mask: Uint8Array, width: number, height: number): vo
   for (let i = 0; i < mask.length; i++) {
     const l = labels[i];
     if (l && touches[l] && inBand[l] >= areas[l] * 0.9) mask[i] = 0;
-  }
-}
-
-/**
- * Clear punch holes from a coverage map (mutates `out`).
- *
- * Holes are found on the darker pixels only: a hole's soft fringe
- * can touch a neighbouring letter and merge with it into one blob that looks
- * nothing like a hole. Each hole is then cleared together with the fringe
- * around its core, leaving any other core blob untouched.
- */
-function removePunchHoles(out: FloatImage, luma: FloatImage, band: number): void {
-  const { width, height } = out;
-  const core = new Uint8Array(out.data.length);
-  // Hole shadows are grey rather than black, but well clear of the faint
-  // fringe that can bridge a hole to a neighbouring letter. Holes can only
-  // sit near the long edges, so the middle of the page is left out.
-  const portrait = height >= width;
-  const span = portrait ? width : height;
-  const reach = Math.ceil(0.15 * Math.min(width, height));
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const across = portrait ? x : y;
-      if (across > reach && across < span - reach) continue;
-      const i = y * width + x;
-      core[i] = out.data[i] < 0.75 ? 1 : 0;
-    }
-  }
-  const { labels, blobs } = measureBlobs(core, luma, band);
-  const all = new Uint8Array(blobs.length).fill(1);
-  const margin = Math.max(2, Math.round(Math.max(width, height) * 0.001));
-  for (const l of findPunchHoles(blobs, all, width, height)) {
-    const b = blobs[l]!;
-    for (let y = Math.max(0, b.minY - margin); y <= Math.min(height - 1, b.maxY + margin); y++) {
-      for (let x = Math.max(0, b.minX - margin); x <= Math.min(width - 1, b.maxX + margin); x++) {
-        const i = y * width + x;
-        if (labels[i] === l || labels[i] === 0) out.data[i] = 1;
-      }
-    }
   }
 }
 
