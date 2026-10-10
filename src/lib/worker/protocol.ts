@@ -1,5 +1,6 @@
 import type { Detection } from '../detect/heatmap';
 import type { Quad } from '../imaging/image';
+import type { OcrWord } from '../ocr/paddle';
 import type { PdfImage } from '../pdf/writer';
 import type { PageSpec } from '../pipeline';
 
@@ -19,7 +20,13 @@ export interface RenderJob {
 
 export type ProcessorRequest =
   | ({ type: 'render'; id: number } & RenderJob)
-  | ({ type: 'encode'; id: number; jpegQuality: number } & RenderJob)
+  | ({
+      type: 'encode';
+      id: number;
+      jpegQuality: number;
+      /** Also return the page scaled to this long edge, for OCR. */
+      ocrEdge?: number;
+    } & RenderJob)
   /** The rectified page before any filter, for "hold to compare". */
   | ({ type: 'rectified'; id: number } & RenderJob)
   /** Drop a queued job; handled immediately, not in queue order. */
@@ -28,7 +35,14 @@ export type ProcessorRequest =
 
 export type ProcessorResponse =
   | { type: 'bitmap'; id: number; bitmap: ImageBitmap }
-  | { type: 'encoded'; id: number; image: PdfImage; width: number; height: number }
+  | {
+      type: 'encoded';
+      id: number;
+      image: PdfImage;
+      width: number;
+      height: number;
+      ocr?: { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number };
+    }
   | { type: 'error'; id: number; message: string };
 
 /* ------------------------------------------------------------- detector ---- */
@@ -56,3 +70,16 @@ export type DetectorResponse =
       sharpness: number;
     }
   | { type: 'error'; id: number; message: string };
+
+/* ------------------------------------------------------------------ ocr ---- */
+
+export type OcrRequest = {
+  type: 'ocr';
+  id: number;
+  data: Uint8ClampedArray<ArrayBuffer>;
+  width: number;
+  height: number;
+};
+
+export type OcrResponse =
+  { type: 'words'; id: number; words: OcrWord[] } | { type: 'error'; id: number; message: string };

@@ -17,6 +17,50 @@
   color-scheme: dark;
 }
 
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f4f6;
+    --panel: #ffffff;
+    --panel-2: #ececef;
+    --panel-3: #e0e0e5;
+    --border: #d6d6dc;
+    --text: #17171a;
+    --muted: #64646d;
+    --accent: #2f6fe8;
+    --accent-strong: #245ccc;
+    --good: #15803d;
+    --err: #dc2626;
+    --warn: #b45309;
+    color-scheme: light;
+  }
+}
+
+/* The camera and crop screens look at photos: they stay dark in either theme. */
+.camera,
+.crop {
+  --bg: #0b0b0c;
+  --panel: #151517;
+  --panel-2: #1d1d20;
+  --panel-3: #28282c;
+  --border: #2c2c31;
+  --text: #f1f1f3;
+  --muted: #9a9aa3;
+  --good: #22c55e;
+  --err: #ef4444;
+  --warn: #f59e0b;
+  color-scheme: dark;
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
@@ -128,6 +172,14 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  animation: screen-in 0.18s ease-out;
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 .topbar {

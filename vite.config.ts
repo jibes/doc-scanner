@@ -43,6 +43,16 @@ export default defineConfig({
       workbox: {
         // The model and the ONNX runtime are what make the app work offline.
         globPatterns: ['**/*.{js,mjs,css,html,svg,png,webmanifest,wasm,onnx}'],
+        // The OCR models (~13 MB) are only fetched, then cached, when a PDF is
+        // first made; the page detector is needed immediately and precached.
+        globIgnores: ['**/models/ppocrv5-*'],
+        runtimeCaching: [
+          {
+            urlPattern: /\/models\/ppocrv5-/,
+            handler: 'CacheFirst',
+            options: { cacheName: 'ocr-models' },
+          },
+        ],
         maximumFileSizeToCacheInBytes: 32 * 1024 * 1024,
         navigateFallback,
         cleanupOutdatedCaches: true,

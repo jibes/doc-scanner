@@ -14,9 +14,27 @@ export interface StoredPage {
   sharpness?: number | null;
 }
 
+/** A finished document: saved/shared as a PDF, or uploaded to Paperless. */
+export interface HistoryEntry {
+  id: string;
+  title: string;
+  createdAt: number;
+  kind: 'pdf' | 'upload';
+  pages: number;
+  bytes: number;
+  /** Kept for the most recent entries only, so they can be shared again. */
+  pdf: Blob | null;
+  /** For uploads: how Paperless reported the result. */
+  outcome?: 'success' | 'failure' | 'pending';
+}
+
 const DB_NAME = 'doc-scanner';
+const DB_VERSION = 2;
 const STORE = 'pages';
 const META = 'meta';
+const HISTORY = 'history';
+/** PDFs are kept for this many recent history entries. */
+const KEEP_PDFS = 15;
 
 let opening: Promise<IDBDatabase> | null = null;
 
@@ -28,11 +46,14 @@ function open(): Promise<IDBDatabase> {
     // Opening can stall indefinitely (another tab holding an old version
     // open, a pending delete). The app must still start.
     const timer = setTimeout(() => reject(new Error('Storage did not respond')), OPEN_TIMEOUT_MS);
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event) => {
       const db = request.result;
-      db.createObjectStore(STORE, { keyPath: 'id' });
-      db.createObjectStore(META);
+      if (event.oldVersion < 1) {
+        db.createObjectStore(STORE, { keyPath: 'id' });
+        db.createObjectStore(META);
+      }
+      if (event.oldVersion < 2) db.createObjectStore(HISTORY, { keyPath: 'id' });
     };
     request.onsuccess = () => {
       clearTimeout(timer);
@@ -114,6 +135,46 @@ export async function loadTitle(): Promise<string> {
 export async function saveTitle(title: string): Promise<void> {
   try {
     await run(META, 'readwrite', (s) => s.put(title, 'title'));
+  } catch {
+    // See above.
+  }
+}
+
+/* -------------------------------------------------------------- history ---- */
+
+export async function loadHistory(): Promise<HistoryEntry[]> {
+  try {
+    const entries = (await run<HistoryEntry[]>(HISTORY, 'readonly', (s) => s.getAll())) ?? [];
+    return entries.sort((a, b) => b.createdAt - a.createdAt);
+  } catch {
+    return [];
+  }
+}
+
+/** Add an entry, dropping the stored PDF of all but the most recent ones. */
+export async function addHistory(entry: HistoryEntry): Promise<void> {
+  try {
+    await run(HISTORY, 'readwrite', (s) => s.put(entry));
+    const all = await loadHistory();
+    for (const old of all.slice(KEEP_PDFS)) {
+      if (old.pdf) await run(HISTORY, 'readwrite', (s) => s.put({ ...old, pdf: null }));
+    }
+  } catch {
+    // See above.
+  }
+}
+
+export async function updateHistory(entry: HistoryEntry): Promise<void> {
+  try {
+    await run(HISTORY, 'readwrite', (s) => s.put(entry));
+  } catch {
+    // See above.
+  }
+}
+
+export async function deleteHistory(id: string): Promise<void> {
+  try {
+    await run(HISTORY, 'readwrite', (s) => s.delete(id));
   } catch {
     // See above.
   }

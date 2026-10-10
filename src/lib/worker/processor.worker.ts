@@ -1,6 +1,7 @@
 import { applyFilter, isGrayFilter, type FilterId } from '../imaging/filters';
 import type { RGBAImage } from '../imaging/image';
 import { quadPageSize, scaleQuad } from '../imaging/quad';
+import { resize } from '../imaging/resample';
 import { pngPredict } from '../pdf/predict';
 import type { PdfImage } from '../pdf/writer';
 import { filterContext, rectifyPage, type PageSpec } from '../pipeline';
@@ -202,9 +203,21 @@ async function handle(request: ProcessorRequest): Promise<void> {
       return;
     }
     const image = await encodeForPdf(result, spec.filter, request.jpegQuality);
-    self.postMessage({ type: 'encoded', id, image, width: result.width, height: result.height }, [
-      image.bytes.buffer,
-    ]);
+    const transfer: Transferable[] = [image.bytes.buffer];
+    let ocr: { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } | undefined;
+    if (request.ocrEdge) {
+      const scale = Math.min(1, request.ocrEdge / Math.max(result.width, result.height));
+      ocr = resize(
+        result,
+        Math.max(1, Math.round(result.width * scale)),
+        Math.max(1, Math.round(result.height * scale)),
+      );
+      transfer.push(ocr.data.buffer);
+    }
+    self.postMessage(
+      { type: 'encoded', id, image, width: result.width, height: result.height, ocr },
+      transfer,
+    );
   } catch (error) {
     self.postMessage({
       type: 'error',

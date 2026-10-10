@@ -99,9 +99,41 @@ class Session {
     if (changed) this.persist(changed);
   }
 
-  remove(id: string): void {
+  /** Remove a page; returns a function that puts it back where it was. */
+  remove(id: string): () => void {
+    const index = this.pages.findIndex((p) => p.id === id);
+    const page = this.pages[index];
     this.pages = this.pages.filter((p) => p.id !== id);
     void deletePage(id);
+    this.persistOrder();
+    return () => {
+      if (!page || this.get(page.id)) return;
+      const next = [...this.pages];
+      next.splice(Math.min(index, next.length), 0, page);
+      this.pages = next;
+      this.persistOrder();
+    };
+  }
+
+  /** Move a page to a new position (drag and drop). */
+  moveTo(id: string, index: number): void {
+    const from = this.pages.findIndex((p) => p.id === id);
+    if (from < 0) return;
+    const to = Math.max(0, Math.min(this.pages.length - 1, index));
+    if (to === from) return;
+    const next = [...this.pages];
+    const [page] = next.splice(from, 1);
+    next.splice(to, 0, page);
+    this.pages = next;
+    this.persistOrder();
+  }
+
+  /** Give every page the same filter and adjustments. */
+  applyToAll(spec: Pick<PageSpec, 'filter' | 'adjustments'>): void {
+    this.pages = this.pages.map((p) => ({
+      ...p,
+      spec: { ...p.spec, filter: spec.filter, adjustments: { ...spec.adjustments } },
+    }));
     this.persistOrder();
   }
 

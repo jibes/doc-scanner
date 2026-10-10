@@ -3,6 +3,7 @@
   import CameraScreen from './components/CameraScreen.svelte';
   import CropScreen from './components/CropScreen.svelte';
   import DocumentScreen from './components/DocumentScreen.svelte';
+  import HistoryScreen from './components/HistoryScreen.svelte';
   import Overlays from './components/Overlays.svelte';
   import PageScreen from './components/PageScreen.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
@@ -14,6 +15,7 @@
   type Screen =
     | { name: 'camera'; retakeId: string | null }
     | { name: 'document' }
+    | { name: 'history' }
     | { name: 'page'; id: string }
     | { name: 'crop'; id: string; back: Screen };
 
@@ -82,7 +84,10 @@
       onCamera={() => (screen = { name: 'camera', retakeId: null })}
       onOpen={(id) => (screen = { name: 'page', id })}
       onSettings={() => void settingsDialog?.open()}
+      onHistory={() => (screen = { name: 'history' })}
     />
+  {:else if screen.name === 'history'}
+    <HistoryScreen {settings} onBack={() => (screen = { name: 'document' })} />
   {:else if screen.name === 'page' && currentPage}
     {@const id = screen.id}
     <PageScreen
