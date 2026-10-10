@@ -1,5 +1,5 @@
 import { createRGBA, downsampleBox, type Quad, type RGBAImage } from './image';
-import { homography, quadNaturalSize } from './quad';
+import { homography } from './quad';
 
 /**
  * Rectify `quad` (in source pixel-edge coordinates, so a full-image quad is
@@ -9,9 +9,11 @@ import { homography, quadNaturalSize } from './quad';
  * samples), so unlike B-spline or bilinear it does not soften text edges when
  * the page is enlarged.
  *
- * When the warp would shrink the page by 2x or more, the source is first
- * box-averaged by the integer part of that factor, because a 4x4 kernel cannot
- * see enough source pixels to avoid aliasing on its own.
+ * Where the warp would shrink the page by 2x or more along a source axis, the
+ * source is first box-averaged along that axis by the integer part of that
+ * factor, because a 4x4 kernel cannot see enough source pixels to avoid
+ * aliasing on its own. Each axis gets its own factor, so squashing a page in
+ * one direction only is antialiased too.
  */
 export function warpQuad(
   src: RGBAImage,
@@ -19,14 +21,12 @@ export function warpQuad(
   outWidth: number,
   outHeight: number,
 ): RGBAImage {
-  const natural = quadNaturalSize(quad);
-  const shrink = Math.min(natural.width / outWidth, natural.height / outHeight);
-  const factor = shrink >= 2 ? Math.floor(shrink) : 1;
-  const source = factor > 1 ? downsampleBox(src, factor) : src;
+  const shrink = sourceShrink(quad, outWidth, outHeight);
+  const fx = shrink.x >= 2 ? Math.floor(shrink.x) : 1;
+  const fy = shrink.y >= 2 ? Math.floor(shrink.y) : 1;
+  const source = fx > 1 || fy > 1 ? downsampleBox(src, fx, fy) : src;
   const q =
-    factor > 1
-      ? (quad.map(([x, y]) => [x / factor, y / factor] as const) as unknown as Quad)
-      : quad;
+    fx > 1 || fy > 1 ? (quad.map(([x, y]) => [x / fx, y / fy] as const) as unknown as Quad) : quad;
 
   const h = homography(
     [
@@ -102,6 +102,21 @@ export function warpQuad(
     }
   }
   return out;
+}
+
+/**
+ * Source pixels per output pixel along the source's x and y axes. The page's
+ * edges (longer of each opposite pair, as in `quadNaturalSize`) give how far
+ * one output pixel steps in the source along each output axis; a source
+ * axis's shrink is the length of its share of those steps, so a page warped
+ * on its side still has its shrink measured along the right axes.
+ */
+function sourceShrink(quad: Quad, outWidth: number, outHeight: number): { x: number; y: number } {
+  const [tl, tr, br, bl] = quad;
+  const across = (c: 0 | 1) =>
+    Math.max(Math.abs(tr[c] - tl[c]), Math.abs(br[c] - bl[c])) / outWidth;
+  const down = (c: 0 | 1) => Math.max(Math.abs(bl[c] - tl[c]), Math.abs(br[c] - tr[c])) / outHeight;
+  return { x: Math.hypot(across(0), down(0)), y: Math.hypot(across(1), down(1)) };
 }
 
 /** Plain resize of a whole image (no perspective), same kernel and prefilter. */
