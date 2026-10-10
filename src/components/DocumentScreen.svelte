@@ -31,8 +31,11 @@
     return session.pages.every((p) => p.spec.filter === first) ? first : null;
   });
 
-  function applyToAll(filter: FilterId) {
-    for (const page of session.pages) session.update(page.id, { filter });
+  function applyToAll(filter: FilterId, label: string) {
+    if (commonFilter === filter) return;
+    const undo = session.applyToAll({ filter });
+    haptic('tick');
+    toast(`${label} on all pages.`, 'info', { label: 'Undo', run: undo });
   }
 
   /* ----------------------------------------------------------- export ---- */
@@ -62,7 +65,37 @@
   }
 
   function offerNewDocument(message: string) {
-    toast(message, 'good', { label: 'New document', run: () => session.clear() });
+    // Starting over deletes the pages, so it asks first, like Discard.
+    toast(message, 'good', { label: 'New document', run: discard });
+  }
+
+  /**
+   * Hand the PDF over. The share sheet needs a recent tap, and building the
+   * PDF usually outlasts the one on "PDF"; the browser then refuses, and a
+   * "Share" button offers a fresh tap instead of silently downloading.
+   */
+  async function deliver(pdf: Blob, name: string, docTitle: string, pages: number, retry = false) {
+    // A second refusal, despite the fresh tap, falls back to a download.
+    const how = await saveFile(pdf, name, { deferShare: !retry });
+    if (how === 'needs-tap') {
+      toast('Your PDF is ready.', 'good', {
+        label: 'Share',
+        run: () => void deliver(pdf, name, docTitle, pages, true).catch(shareFailed),
+      });
+      return;
+    }
+    // Closing the share sheet sends nothing anywhere.
+    if (how === 'cancelled') return;
+    haptic('success');
+    void recordHistory({ title: docTitle, kind: 'pdf', pages, bytes: pdf.size, pdf });
+    offerNewDocument(
+      how === 'downloaded' ? `Saved ${name} (${(pdf.size / 1024).toFixed(0)} KB)` : 'Shared.',
+    );
+  }
+
+  function shareFailed(error: unknown) {
+    haptic('error');
+    toast(`Could not share the PDF: ${errorMessage(error)}`, 'err');
   }
 
   async function save() {
@@ -70,19 +103,7 @@
       // Saved and shared PDFs carry the OCR text layer.
       const pdf = await build(true);
       idle();
-      const name = pdfFilename(title);
-      const how = await saveFile(pdf, name);
-      haptic('success');
-      void recordHistory({
-        title,
-        kind: 'pdf',
-        pages: session.pages.length,
-        bytes: pdf.size,
-        pdf,
-      });
-      offerNewDocument(
-        how === 'downloaded' ? `Saved ${name} (${(pdf.size / 1024).toFixed(0)} KB)` : 'Shared.',
-      );
+      await deliver(pdf, pdfFilename(title), title, session.pages.length);
     } catch (error) {
       haptic('error');
       toast(`Could not create the PDF: ${errorMessage(error)}`, 'err');
@@ -276,7 +297,7 @@
           <button
             class="chip"
             class:active={commonFilter === f.id}
-            onclick={() => applyToAll(f.id)}
+            onclick={() => applyToAll(f.id, f.label)}
           >
             {f.label}
           </button>
