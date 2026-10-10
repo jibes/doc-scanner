@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Doc Scanner e2e harness</title>
+  </head>
+  <body>
+    <p id="status">loading…</p>
+    <script type="module">
+      import './harness.ts';
+      document.getElementById('status').textContent = 'ready';
+    </script>
+  </body>
+</html>
