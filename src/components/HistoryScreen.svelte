@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { pdfFilename, saveFile } from '../lib/export';
+  import { canShareFiles, pdfFilename, saveFile } from '../lib/export';
   import { haptic } from '../lib/haptics';
   import {
     deleteHistory,
@@ -55,10 +55,13 @@
       : `${Math.round(bytes / 1024)} KB`;
   }
 
-  async function share(entry: HistoryEntry) {
+  const sharing = canShareFiles();
+
+  async function share(entry: HistoryEntry, download = false) {
     if (!entry.pdf) return;
     try {
-      await saveFile(entry.pdf, pdfFilename(entry.title));
+      if ((await saveFile(entry.pdf, pdfFilename(entry.title), { download })) === 'cancelled')
+        return;
       haptic('success');
     } catch (error) {
       toast(`Could not share: ${errorMessage(error)}`, 'err');
@@ -168,13 +171,23 @@
             </div>
           </div>
           <div class="actions">
+            {#if sharing}
+              <button
+                class="icon ghost"
+                onclick={() => void share(entry)}
+                disabled={!entry.pdf}
+                aria-label="Share {entry.title}"
+              >
+                <Icon name="share" />
+              </button>
+            {/if}
             <button
               class="icon ghost"
-              onclick={() => void share(entry)}
+              onclick={() => void share(entry, true)}
               disabled={!entry.pdf}
-              aria-label="Share or save {entry.title}"
+              aria-label="Download {entry.title}"
             >
-              <Icon name="share" />
+              <Icon name="download" />
             </button>
             <button
               class="icon ghost"
