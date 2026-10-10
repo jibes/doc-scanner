@@ -152,10 +152,33 @@ describe('pageSizePoints', () => {
     expect(pageSizePoints(2550, 4200)).toMatchObject({ format: 'Legal' });
   });
 
-  it('falls back to the given DPI for other shapes', () => {
-    const receipt = pageSizePoints(600, 2400, 300);
-    expect(receipt.format).toBeNull();
-    expect(receipt.width).toBeCloseTo(144);
-    expect(receipt.height).toBeCloseTo(576);
+  it('sizes an ID-1 card and a till receipt from their shape', () => {
+    const mm = (pt: number) => (pt / 72) * 25.4;
+    const card = pageSizePoints(3000, 1892);
+    expect(card.format).toBeNull();
+    expect(card.basis).toBe('card');
+    expect(mm(card.width)).toBeCloseTo(85.6, 1);
+    expect(mm(card.height)).toBeCloseTo(53.98, 1);
+    const receipt = pageSizePoints(600, 1260);
+    expect(receipt.basis).toBe('receipt');
+    expect(mm(receipt.width)).toBeCloseTo(80, 1);
+    expect(mm(receipt.height)).toBeCloseTo(168, 0);
+  });
+
+  it('fits other shapes into A4 rather than inventing a resolution', () => {
+    const square = pageSizePoints(2000, 2000);
+    expect(square).toMatchObject({ format: null, basis: 'fit' });
+    expect(square.width).toBeCloseTo(595.28);
+    expect(square.height).toBeCloseTo(595.28);
+    const wide = pageSizePoints(3000, 2000);
+    expect(wide.width).toBeCloseTo(841.89);
+    expect(wide.height).toBeCloseTo(561.26, 1);
+  });
+
+  it('claims no format for a crop whose shape is unknown', () => {
+    // A 4:3 photo inset is within 3.5% of Letter, but it is not a Letter page.
+    const guess = pageSizePoints(2903, 3871, { known: false });
+    expect(guess).toMatchObject({ format: null, basis: 'fit' });
+    expect(pageSizePoints(2480, 3508, { known: false }).format).toBeNull();
   });
 });
