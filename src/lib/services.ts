@@ -26,6 +26,23 @@ export function detector(): DetectorClient {
   return detectorInstance;
 }
 
+/** Long edge of the first-page thumbnail kept with each history entry. */
+const THUMB_EDGE = 200;
+
+/** A small JPEG of `page` as it will be exported, or undefined if it cannot be made. */
+export async function pageThumbnail(page: Page | undefined): Promise<Blob | undefined> {
+  if (!page) return undefined;
+  try {
+    const bitmap = await processor().render(renderJob(page, THUMB_EDGE));
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    return await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
+  } catch {
+    return undefined;
+  }
+}
+
 /** The worker job for rendering `page` at `longEdge`. */
 export function renderJob(page: Page, longEdge: number): RenderJob {
   return {

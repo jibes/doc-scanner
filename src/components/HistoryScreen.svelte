@@ -57,6 +57,34 @@
 
   const sharing = canShareFiles();
 
+  /** Shows a stored image Blob, releasing its object URL when done. */
+  function blobSrc(img: HTMLImageElement, blob: Blob) {
+    let url = URL.createObjectURL(blob);
+    img.src = url;
+    return {
+      update(next: Blob) {
+        URL.revokeObjectURL(url);
+        url = URL.createObjectURL(next);
+        img.src = url;
+      },
+      destroy() {
+        URL.revokeObjectURL(url);
+      },
+    };
+  }
+
+  /** Open the stored PDF in the browser's own viewer. */
+  function view(entry: HistoryEntry) {
+    if (!entry.pdf) return;
+    const url = URL.createObjectURL(entry.pdf);
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
   async function share(entry: HistoryEntry, download = false) {
     if (!entry.pdf) return;
     try {
@@ -159,6 +187,18 @@
     <ul class="list">
       {#each entries as entry (entry.id)}
         <li class="entry">
+          <button
+            class="thumb"
+            onclick={() => view(entry)}
+            disabled={!entry.pdf}
+            aria-label="Open {entry.title}"
+          >
+            {#if entry.thumb}
+              <img use:blobSrc={entry.thumb} alt="" />
+            {:else}
+              <Icon name="scan" />
+            {/if}
+          </button>
           <div class="info">
             <div class="name">{entry.title}</div>
             <div class="meta">
@@ -193,9 +233,10 @@
               class="icon ghost"
               onclick={() => void upload(entry)}
               disabled={!entry.pdf || uploading.has(entry.id)}
-              aria-label="Upload {entry.title} to Paperless"
+              aria-label="Send {entry.title} to Paperless"
+              title="Send to Paperless"
             >
-              <Icon name="upload" />
+              <Icon name="leaf" />
             </button>
             <button
               class="icon ghost danger"
@@ -252,6 +293,36 @@
   .info {
     flex: 1;
     min-width: 0;
+  }
+
+  .thumb {
+    flex: none;
+    width: 44px;
+    height: 58px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--muted);
+  }
+
+  .thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top;
+  }
+
+  .thumb :global(svg) {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
   }
 
   .name {

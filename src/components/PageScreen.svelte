@@ -19,6 +19,9 @@
   let { page, onBack, onCrop, onRetake, onOpen }: Props = $props();
 
   const PREVIEW_EDGE = 1600;
+  /** Rendered while zooming in, so small print stays sharp. */
+  const ZOOM_EDGE = 3200;
+  const MAX_ZOOM = 6;
 
   let comparing = $state(false);
   let rendering = $state(false);
@@ -69,8 +72,84 @@
   let swipe = $state<{ id: number; x: number; y: number } | null>(null);
   let dragX = $state(0);
 
+  /*
+   * Pinch to zoom. The page follows the fingers and springs back to the
+   * whole page when they let go, so there is no zoomed state to get lost in.
+   */
+  // Not reactive state: only the derived `zoom` is shown.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity
+  const pointers = new Map<number, { x: number; y: number }>();
+  let slide = $state<HTMLElement | null>(null);
+  let pinch: { distance: number; mid: { x: number; y: number }; origin: DOMRect } | null = null;
+  let zoom = $state({ scale: 1, x: 0, y: 0 });
+  let zooming = $state(false);
+
+  function spread() {
+    const [a, b] = [...pointers.values()];
+    return {
+      distance: Math.hypot(a.x - b.x, a.y - b.y),
+      mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+    };
+  }
+
+  function pointerDown(event: PointerEvent) {
+    if ((event.target as Element).closest('button')) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size === 2) {
+      // A second finger turns a swipe into a pinch.
+      swipe = null;
+      dragX = 0;
+      const { distance, mid } = spread();
+      // The page box the zoom transform applies to, as laid out unzoomed.
+      const box = (slide ?? (event.currentTarget as HTMLElement)).getBoundingClientRect();
+      const origin = new DOMRect(
+        box.left - zoom.x - dragX,
+        box.top - zoom.y,
+        box.width / zoom.scale,
+        box.height / zoom.scale,
+      );
+      pinch = { distance: Math.max(distance, 1), mid, origin };
+      zooming = true;
+    } else if (pointers.size === 1) {
+      swipeStart(event);
+    }
+  }
+
+  function pointerMove(event: PointerEvent) {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch && pointers.size >= 2) {
+      const { distance, mid } = spread();
+      const scale = Math.min(MAX_ZOOM, Math.max(1, distance / pinch.distance));
+      // Keep the point first pinched under the fingers' midpoint.
+      const x0 = pinch.mid.x - pinch.origin.left;
+      const y0 = pinch.mid.y - pinch.origin.top;
+      zoom = {
+        scale,
+        x: mid.x - pinch.origin.left - x0 * scale,
+        y: mid.y - pinch.origin.top - y0 * scale,
+      };
+    } else {
+      swipeMove(event);
+    }
+  }
+
+  function pointerUp(event: PointerEvent) {
+    if (!pointers.delete(event.pointerId)) return;
+    if (pinch) {
+      // Spring back once every finger has let go.
+      if (pointers.size === 0) {
+        pinch = null;
+        zooming = false;
+        zoom = { scale: 1, x: 0, y: 0 };
+      }
+      return;
+    }
+    swipeEnd(event);
+  }
+
   function swipeStart(event: PointerEvent) {
-    if (swipe || (event.target as Element).closest('button')) return;
+    if (swipe) return;
     swipe = { id: event.pointerId, x: event.clientX, y: event.clientY };
   }
 
@@ -147,17 +226,22 @@
   <div
     class="viewport"
     role="group"
-    aria-label="Page preview; swipe to change page"
-    onpointerdown={swipeStart}
-    onpointermove={swipeMove}
-    onpointerup={swipeEnd}
-    onpointercancel={swipeEnd}
+    aria-label="Page preview; swipe to change page, pinch to zoom"
+    onpointerdown={pointerDown}
+    onpointermove={pointerMove}
+    onpointerup={pointerUp}
+    onpointercancel={pointerUp}
   >
-    <div class="slide" class:dragging={swipe !== null} style="transform: translateX({dragX}px)">
+    <div
+      bind:this={slide}
+      class="slide"
+      class:dragging={swipe !== null || zooming}
+      style="transform: translate({dragX + zoom.x}px, {zoom.y}px) scale({zoom.scale})"
+    >
       {#key page.id}
         <PageCanvas
           {page}
-          longEdge={PREVIEW_EDGE}
+          longEdge={zooming ? ZOOM_EDGE : PREVIEW_EDGE}
           channel="page-preview"
           class="preview {comparing ? 'hidden' : ''}"
           onrendering={(r) => (rendering = r)}
@@ -306,7 +390,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 0.2s ease;
+    transform-origin: 0 0;
+    /* A slight overshoot: the page bounces back into place. */
+    transition: transform 0.32s cubic-bezier(0.34, 1.4, 0.64, 1);
   }
 
   .slide.dragging {
