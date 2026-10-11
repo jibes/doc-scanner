@@ -1164,16 +1164,7 @@
     margin-left: -14px;
   }
 
-  /* Narrow phones: the row scrolls; its far edge fades to say so. */
   @media (max-width: 374px) {
-    .filters {
-      mask-image: linear-gradient(to left, transparent, #000 var(--s-8));
-    }
-
-    .filters .chip {
-      padding: 0 10px;
-    }
-
     .filters .chip:first-child {
       margin-left: -10px;
     }

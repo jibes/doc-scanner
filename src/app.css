@@ -1,8 +1,7 @@
 /*
  * Design tokens. "Paper on a quiet desk": the pages are the only bright,
  * crisp things; everything else recedes into the desk. One accent colour,
- * used for the primary action, selection and focus. See the design notes in
- * README.md (Design).
+ * used for the primary action, selection and focus.
  */
 :root {
   /* Colour: dark. */
@@ -381,6 +380,17 @@ svg.i {
   background: var(--fill);
   color: var(--text);
   font-weight: 650;
+}
+
+/* Narrow phones: tighter chips; a row that still overflows fades at its end. */
+@media (max-width: 374px) {
+  .chip {
+    padding: 0 10px;
+  }
+
+  .chips {
+    mask-image: linear-gradient(to left, transparent, #000 var(--s-8));
+  }
 }
 
 /* ------------------------------------------------------------- fields ---- */
