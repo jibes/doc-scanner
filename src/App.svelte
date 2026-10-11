@@ -13,7 +13,10 @@
   import { detector, forgetPage } from './lib/services';
   import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
   import { clearShareFlag, importShared, sharedFiles } from './lib/shareTarget';
+  import { queueChanged, queueStatus } from './lib/queueStatus.svelte';
   import { session } from './lib/store/session.svelte';
+  import { toast } from './lib/ui.svelte';
+  import { startUploadQueue } from './lib/uploadQueue';
 
   type Screen =
     | { name: 'camera'; retakeId: string | null }
@@ -36,6 +39,21 @@
       const share = await shared;
       if (share?.files.length) void importShared(share, settings.defaultFilter);
       else if (session.pages.length === 0) screen = { name: 'camera', retakeId: null };
+    });
+    // Uploads that waited for Paperless to be reachable go out by themselves.
+    return startUploadQueue({
+      getConfig: () => settings.paperless,
+      onUploaded: () => {
+        queueChanged();
+        toast('A waiting document was sent to Paperless.', 'good');
+      },
+      onSettled: queueChanged,
+      onRejected: (_entry, message) => {
+        queueChanged();
+        toast(`Paperless rejected a waiting document: ${message}`, 'err');
+      },
+      onChanged: queueChanged,
+      onCountChange: (count) => (queueStatus.waiting = count),
     });
   });
 

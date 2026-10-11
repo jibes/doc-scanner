@@ -14,7 +14,17 @@
     updateHistory,
     type HistoryEntry,
   } from '../lib/history';
-  import { isConfigured, pollTask, storedOutcome, uploadDocument } from '../lib/paperless';
+  import { isConfigured, pollTask, storedOutcome } from '../lib/paperless';
+  import { defaultSelection, uploadWithSelection } from '../lib/paperlessMeta';
+  import { pickUploadMeta } from '../lib/paperlessSheet';
+  import { queueStatus } from '../lib/queueStatus.svelte';
+  import {
+    cancelQueued,
+    flushUploadQueue,
+    queueUpload,
+    restoreQueued,
+    shouldQueue,
+  } from '../lib/uploadQueue';
   import type { AppSettings } from '../lib/settings';
   import { session } from '../lib/store/session.svelte';
   import { busy, errorMessage, idle, toast, ui } from '../lib/ui.svelte';
@@ -36,6 +46,14 @@
   let loaded = $state(false);
   /** Entries being uploaded right now, so a second tap does not send them twice. */
   const uploading = new SvelteSet<string>();
+
+  // The queue sent, rejected or retried an entry: show it as it is now.
+  let seenChanges = queueStatus.changes;
+  $effect(() => {
+    if (queueStatus.changes === seenChanges) return;
+    seenChanges = queueStatus.changes;
+    void loadHistory().then((list) => (entries = list));
+  });
 
   onMount(() => {
     // Pages kept for entries that were removed meanwhile are dropped first.
@@ -118,15 +136,42 @@
       toast('Add your Paperless URL and API token in the settings first.', 'info');
       return;
     }
+    const selection = await pickUploadMeta(settings.paperless, entry.title, {
+      initial: defaultSelection(settings.paperless),
+    });
+    if (!selection) return;
     uploading.add(entry.id);
     try {
       busy('Uploading to Paperless…');
-      const taskId = await uploadDocument(
-        settings.paperless,
-        entry.pdf,
-        pdfFilename(entry.title),
-        entry.title,
-      );
+      let taskId: string;
+      try {
+        const sent = await uploadWithSelection(
+          settings.paperless,
+          entry.pdf,
+          pdfFilename(entry.title),
+          entry.title,
+          selection,
+        );
+        taskId = sent.taskId;
+        if (sent.missing.length > 0) {
+          toast(`Not found in Paperless, left out: ${sent.missing.join(', ')}`, 'info');
+        }
+      } catch (error) {
+        if (!shouldQueue(error)) throw error;
+        const queued = await queueUpload({
+          title: entry.title,
+          pages: entry.pages,
+          pdf: entry.pdf,
+          filename: pdfFilename(entry.title),
+          selection,
+          thumb: entry.thumb,
+          error,
+          entry,
+        });
+        replace(queued);
+        toast('Paperless is unreachable; it will be sent when it is back.', 'info');
+        return;
+      }
       // Stored before waiting, so a later visit can look the result up.
       const sent: HistoryEntry = { ...entry, kind: 'upload', outcome: 'pending', taskId };
       void updateHistory(sent);
@@ -175,6 +220,8 @@
   function remove(entry: HistoryEntry) {
     entries = entries.filter((e) => e.id !== entry.id);
     void deleteHistory(entry.id);
+    // A waiting upload is withdrawn with it (and put back by Undo).
+    const withdrawn = entry.queued ? cancelQueued(entry.id) : Promise.resolve(null);
     // Pages left behind if the app closes first are dropped on the next visit.
     const forget = setTimeout(() => {
       editable.delete(entry.id);
@@ -185,6 +232,7 @@
       run: () => {
         clearTimeout(forget);
         void updateHistory(entry);
+        void withdrawn.then((item) => item && restoreQueued(item));
         entries = [...entries, entry].sort((a, b) => b.createdAt - a.createdAt);
       },
     });
@@ -257,9 +305,16 @@
               {entry.pages === 1 ? 'page' : 'pages'} · {size(entry.bytes)}
             </div>
             <div class="status" class:bad={entry.outcome === 'failure'}>
-              {entry.kind === 'upload' && entry.outcome ? OUTCOME[entry.outcome] : 'Saved as PDF'}
+              {#if entry.queued}
+                Waiting to upload
+                <button class="link" onclick={() => void flushUploadQueue()}>Retry now</button>
+              {:else}
+                {entry.kind === 'upload' && entry.outcome ? OUTCOME[entry.outcome] : 'Saved as PDF'}
+              {/if}
               {#if !entry.pdf}· file no longer kept{/if}
             </div>
+          </div>
+          <div class="actions">
             <button
               class="edit"
               onclick={() => void editAgain(entry)}
@@ -275,8 +330,6 @@
               </svg>
               Edit again
             </button>
-          </div>
-          <div class="actions">
             {#if sharing}
               <button
                 class="icon ghost"
@@ -351,12 +404,29 @@
     flex: 1;
   }
 
+  /* Thumbnail on the left; name and details on top, actions in a row below,
+     so a long title and the date get the full width on a phone. */
   .entry {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 12px;
+    row-gap: 6px;
+    align-items: start;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
+  }
+
+  .entry .thumb {
+    grid-row: span 2;
+  }
+
+  .entry .actions {
+    grid-column: 2;
+    align-items: center;
+  }
+
+  .entry .actions .edit {
+    margin-right: auto;
   }
 
   .info {
@@ -407,6 +477,15 @@
     color: var(--muted);
   }
 
+  .link {
+    padding: 0 0 0 6px;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    text-decoration: underline;
+  }
+
   .status.bad {
     color: var(--err);
   }
@@ -420,7 +499,6 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    margin-top: 4px;
     padding: 5px 10px 5px 8px;
     border-radius: 999px;
     font-size: 12.5px;

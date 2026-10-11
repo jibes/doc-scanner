@@ -15,7 +15,11 @@
   import { recordHistory, updateHistory } from '../lib/history';
   import type { FilterId } from '../lib/imaging/filters';
   import { isBlurred } from '../lib/imaging/sharpness';
-  import { isConfigured, uploadDocument, waitForTask } from '../lib/paperless';
+  import { isConfigured, waitForTask } from '../lib/paperless';
+  import { uploadWithSelection } from '../lib/paperlessMeta';
+  import { pickUploadMeta } from '../lib/paperlessSheet';
+  import { queueStatus } from '../lib/queueStatus.svelte';
+  import { queueUpload, shouldQueue } from '../lib/uploadQueue';
   import type { AppSettings } from '../lib/settings';
   import { pageThumbnail } from '../lib/services';
   import { session, type Page } from '../lib/store/session.svelte';
@@ -399,9 +403,13 @@
       onSettings();
       return;
     }
+    const current = $state.snapshot(settings);
+    // Tags, document type and correspondent for this upload; the defaults
+    // from the settings come preselected.
+    const selection = await pickUploadMeta(current.paperless, target.title());
+    if (!selection) return;
     const controller = begin('upload');
     if (!controller) return;
-    const current = $state.snapshot(settings);
     try {
       // Paperless runs its own OCR on upload, so the PDF stays image-only.
       const pdf = await build(false, target, controller, current);
@@ -410,7 +418,35 @@
       const thumb = await pageThumbnail(pages[0]);
       // Once on its way, it can no longer be called back.
       updateTask({ label: 'Uploading to Paperless…', progress: null, cancel: undefined });
-      const task = await uploadDocument(current.paperless, pdf, pdfFilename(docTitle), docTitle);
+      let task: string;
+      try {
+        const sent = await uploadWithSelection(
+          current.paperless,
+          pdf,
+          pdfFilename(docTitle),
+          docTitle,
+          selection,
+        );
+        task = sent.taskId;
+        if (sent.missing.length > 0) {
+          toast(`Not found in Paperless, left out: ${sent.missing.join(', ')}`, 'info');
+        }
+      } catch (error) {
+        if (!shouldQueue(error)) throw error;
+        // Paperless cannot be reached: keep it and send it once it can.
+        await queueUpload({
+          title: docTitle,
+          pages: pages.length,
+          pdf,
+          filename: pdfFilename(docTitle),
+          selection,
+          thumb,
+          error,
+        });
+        haptic('success');
+        finished(target, 'Paperless is unreachable; it will be sent when it is back.');
+        return;
+      }
       const entry = recordHistory(
         {
           title: docTitle,
@@ -636,8 +672,15 @@
       {#if session.pages.length > 1}
         <button class="ghost text-button" onclick={startSelecting}>Select</button>
       {/if}
-      <button class="icon ghost" onclick={onHistory} aria-label="History">
+      <button
+        class="icon ghost history"
+        onclick={onHistory}
+        aria-label={queueStatus.waiting > 0
+          ? `History, ${queueStatus.waiting} waiting to upload`
+          : 'History'}
+      >
         <Icon name="history" />
+        {#if queueStatus.waiting > 0}<span class="badge">{queueStatus.waiting}</span>{/if}
       </button>
       <button class="icon ghost" onclick={onSettings} aria-label="Settings">
         <Icon name="settings" />
@@ -887,6 +930,26 @@
 </dialog>
 
 <style>
+  .history {
+    position: relative;
+  }
+
+  .badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+  }
+
   .title-input {
     flex: 1;
     min-width: 0;
