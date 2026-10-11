@@ -1,6 +1,6 @@
 <script lang="ts" module>
   const PATHS = {
-    back: ['M15 18l-6-6 6-6'],
+    back: ['M19 12H5', 'M11 18l-6-6 6-6'],
     close: ['M18 6 6 18', 'M6 6l12 12'],
     check: ['M20 6 9 17l-5-5'],
     settings: [
@@ -57,16 +57,27 @@
       'M7 12h10',
     ],
     eye: ['M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'],
+    split: ['M4 3h7v8H4z', 'M13 13h7v8h-7z', 'M15 4h5v5', 'M20 4l-6 6'],
+    edit: ['M12 20h9', 'M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z'],
+    alert: ['M12 3 2 20h20L12 3z', 'M12 10v4', 'M12 17h0'],
+    toStart: ['M11 18l-6-6 6-6', 'M19 18l-6-6 6-6'],
+    toEnd: ['M13 18l6-6-6-6', 'M5 18l6-6-6-6'],
   } as const;
 
   export type IconName = keyof typeof PATHS;
 </script>
 
 <script lang="ts">
-  let { name }: { name: IconName } = $props();
+  let { name, size }: { name: IconName; size?: number } = $props();
 </script>
 
-<svg viewBox="0 0 24 24" aria-hidden="true">
+<svg
+  class="i"
+  viewBox="0 0 24 24"
+  aria-hidden="true"
+  style:width={size && `${size}px`}
+  style:height={size && `${size}px`}
+>
   {#each PATHS[name] as d (d)}
     <path {d} />
   {/each}

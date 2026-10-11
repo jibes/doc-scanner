@@ -1,64 +1,142 @@
+/*
+ * Design tokens. "Paper on a quiet desk": the pages are the only bright,
+ * crisp things; everything else recedes into the desk. One accent colour,
+ * used for the primary action, selection and focus. See the design notes in
+ * README.md (Design).
+ */
 :root {
-  --bg: #0b0b0c;
-  --panel: #151517;
-  --panel-2: #1d1d20;
-  --panel-3: #28282c;
-  --border: #2c2c31;
-  --text: #f1f1f3;
-  --muted: #9a9aa3;
-  --accent: #4f8cff;
-  --accent-strong: #3a74e6;
-  --good: #22c55e;
-  --err: #ef4444;
-  --warn: #f59e0b;
-  --radius: 14px;
+  /* Colour: dark. */
+  --bg: #121211;
+  --surface: #1c1c1b;
+  --fill: #2a2a28;
+  --fill-strong: #353533;
+  --line: rgb(255 255 255 / 11%);
+  --text: #f1f0ec;
+  --text-2: #a3a29c;
+  --accent: #3a6ae0;
+  --accent-strong: #2f5bc9;
+  --on-accent: #fff;
+  --accent-text: #8eb1ff;
+  --accent-soft: rgb(142 177 255 / 16%);
+  --good: #74c995;
+  --warn: #e2b35b;
+  --err: #ff8f86;
+  --toast-bg: #e9e8e3;
+  --toast-fg: #1c1c1a;
+  --toast-fg-2: #55544f;
+  --toast-accent: #2a5bcc;
+  --toast-good: #2e7a4f;
+  --toast-err: #c0392f;
+  --scrim: rgb(0 0 0 / 60%);
+  --paper-ring: 0 0 0 1px rgb(255 255 255 / 6%);
+
+  /* Space: a 4/8 pt scale. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --gutter: 16px;
+
+  /* Radius. */
+  --r-xs: 3px;
+  --r-s: 8px;
+  --r-m: 12px;
+  --r-l: 16px;
+  --r-xl: 24px;
+  --r-full: 999px;
+
+  /* Elevation. */
+  --shadow-paper: 0 0 0 1px rgb(0 0 0 / 20%), 0 2px 6px rgb(0 0 0 / 35%);
+  --shadow-1: 0 1px 3px rgb(0 0 0 / 30%);
+  --shadow-2: 0 10px 30px rgb(0 0 0 / 45%), 0 0 0 1px rgb(255 255 255 / 6%);
+  --shadow-3: 0 24px 60px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 7%);
+
+  /* Type. */
+  --font:
+    system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  --fs-title: 28px;
+  --fs-heading: 20px;
+  --fs-large: 17px;
+  --fs-body: 15px;
+  --fs-caption: 13px;
+  --fs-micro: 11px;
+
+  /* Motion. */
+  --dur-1: 150ms;
+  --dur-2: 200ms;
+  --dur-3: 250ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.4, 0, 1, 1);
+
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Content column on wide screens. */
+  --column: 720px;
   color-scheme: dark;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f4f4f6;
-    --panel: #ffffff;
-    --panel-2: #ececef;
-    --panel-3: #e0e0e5;
-    --border: #d6d6dc;
-    --text: #17171a;
-    --muted: #64646d;
-    --accent: #2f6fe8;
-    --accent-strong: #245ccc;
-    --good: #15803d;
-    --err: #dc2626;
-    --warn: #b45309;
+    --bg: #f3f2ef;
+    --surface: #ffffff;
+    --fill: #e8e7e3;
+    --fill-strong: #dcdbd6;
+    --line: rgb(0 0 0 / 9%);
+    --text: #1c1c1a;
+    --text-2: #63625d;
+    --accent: #2c5fd4;
+    --accent-strong: #234fb8;
+    --on-accent: #fff;
+    --accent-text: #2a5bcc;
+    --accent-soft: rgb(44 95 212 / 10%);
+    --good: #2e7a4f;
+    --warn: #94600a;
+    --err: #c0392f;
+    --toast-bg: #262624;
+    --toast-fg: #f4f3ef;
+    --toast-fg-2: #b5b4ae;
+    --toast-accent: #9dbbff;
+    --toast-good: #74c995;
+    --toast-err: #ff8f86;
+    --scrim: rgb(20 20 18 / 40%);
+    --paper-ring: 0 0 0 1px rgb(0 0 0 / 4%);
+    --shadow-paper:
+      0 0 0 1px rgb(0 0 0 / 5%), 0 1px 2px rgb(0 0 0 / 8%), 0 4px 14px rgb(0 0 0 / 7%);
+    --shadow-1: 0 1px 3px rgb(0 0 0 / 10%);
+    --shadow-2: 0 10px 30px rgb(0 0 0 / 18%);
+    --shadow-3: 0 24px 60px rgb(0 0 0 / 22%);
     color-scheme: light;
+  }
+}
+
+@media (min-width: 390px) {
+  :root {
+    --gutter: 20px;
   }
 }
 
 /* The camera and crop screens look at photos: they stay dark in either theme. */
 .camera,
 .crop {
-  --bg: #0b0b0c;
-  --panel: #151517;
-  --panel-2: #1d1d20;
-  --panel-3: #28282c;
-  --border: #2c2c31;
-  --text: #f1f1f3;
-  --muted: #9a9aa3;
-  --good: #22c55e;
-  --err: #ef4444;
-  --warn: #f59e0b;
+  --bg: #000;
+  --surface: #1c1c1b;
+  --fill: #2a2a28;
+  --fill-strong: #353533;
+  --line: rgb(255 255 255 / 11%);
+  --text: #f4f3ef;
+  --text-2: #b0afa9;
+  --accent: #3a6ae0;
+  --accent-text: #8eb1ff;
+  --good: #74c995;
+  --warn: #e2b35b;
+  --err: #ff8f86;
   color-scheme: dark;
   color: var(--text);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-  }
 }
 
 * {
@@ -75,12 +153,8 @@ body {
   overscroll-behavior: none;
   background: var(--bg);
   color: var(--text);
-  font:
-    15px/1.4 -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    sans-serif;
+  font: 400 var(--fs-body) / 1.4 var(--font);
+  -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -95,22 +169,31 @@ textarea {
   user-select: text;
 }
 
+/* ------------------------------------------------------------ buttons ---- */
+
+/* The default is tonal: quiet, filled, no border. */
 button {
   font: inherit;
+  font-weight: 550;
   color: var(--text);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 16px;
+  background: var(--fill);
+  border: none;
+  border-radius: var(--r-m);
+  min-height: 44px;
+  padding: 0 var(--s-4);
   cursor: pointer;
   touch-action: manipulation;
   transition:
-    background 0.12s ease,
-    transform 0.08s ease;
+    background-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease),
+    opacity var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease);
 }
 
-button:hover:not(:disabled) {
-  background: var(--panel-3);
+@media (hover: hover) {
+  button:hover:not(:disabled) {
+    background: var(--fill-strong);
+  }
 }
 
 button:active:not(:disabled) {
@@ -118,53 +201,88 @@ button:active:not(:disabled) {
 }
 
 button:disabled {
-  opacity: 0.4;
+  opacity: 0.38;
   cursor: default;
 }
 
-button:focus-visible,
-input:focus-visible,
-select:focus-visible {
-  outline: 2px solid var(--accent);
+:focus-visible {
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline-offset: 0;
 }
 
 .primary {
   background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
-.primary:hover:not(:disabled) {
-  background: var(--accent-strong);
+@media (hover: hover) {
+  .primary:hover:not(:disabled) {
+    background: var(--accent-strong);
+  }
 }
 
 .ghost {
   background: transparent;
-  border-color: transparent;
+}
+
+@media (hover: hover) {
+  .ghost:hover:not(:disabled) {
+    background: var(--fill);
+  }
+}
+
+/* Text-only, accent coloured: "Select", "Undo", "Retry". */
+.text {
+  background: transparent;
+  color: var(--accent-text);
+  padding: 0 var(--s-3);
+}
+
+@media (hover: hover) {
+  .text:hover:not(:disabled) {
+    background: var(--accent-soft);
+  }
 }
 
 .icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 9px;
-  min-width: 42px;
-  min-height: 42px;
+  gap: var(--s-2);
+  padding: 0 10px;
+  min-width: 44px;
+  min-height: 44px;
 }
 
-.icon svg {
+/* One stroke icon set: 24 px grid, 1.75 stroke, drawn at 22 px. */
+svg.i {
   width: 22px;
   height: 22px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.9;
+  stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
   flex: 0 0 auto;
 }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ screens ---- */
 
 .screen {
   position: absolute;
@@ -172,29 +290,43 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  animation: screen-in 0.18s ease-out;
+  animation: screen-in var(--dur-2) var(--ease);
 }
 
 @keyframes screen-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
+}
+
+/* A centred column on wide screens; the gutter on phones. */
+.column {
+  padding-left: max(var(--gutter), calc((100% - var(--column)) / 2));
+  padding-right: max(var(--gutter), calc((100% - var(--column)) / 2));
 }
 
 .topbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: calc(8px + var(--safe-top)) 10px 8px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  gap: var(--s-1);
+  padding-top: calc(var(--s-2) + var(--safe-top));
+  padding-bottom: var(--s-2);
   flex: 0 0 auto;
-  min-height: calc(56px + var(--safe-top));
+  min-height: calc(60px + var(--safe-top));
+}
+
+.topbar > .icon:first-child {
+  margin-left: -10px;
+}
+
+.topbar > .icon:last-child {
+  margin-right: -10px;
 }
 
 .topbar .title {
   flex: 1;
+  font-size: var(--fs-large);
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
@@ -204,10 +336,10 @@ select:focus-visible {
 
 .bottombar {
   display: flex;
-  gap: 10px;
-  padding: 12px 14px calc(12px + var(--safe-bottom));
-  background: var(--panel);
-  border-top: 1px solid var(--border);
+  align-items: center;
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  padding-bottom: calc(var(--s-3) + var(--safe-bottom));
   flex: 0 0 auto;
 }
 
@@ -215,12 +347,13 @@ select:focus-visible {
   flex: 1;
 }
 
+/* -------------------------------------------------------------- chips ---- */
+
 .chips {
   display: flex;
-  gap: 8px;
+  gap: var(--s-1);
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 2px;
 }
 
 .chips::-webkit-scrollbar {
@@ -229,62 +362,125 @@ select:focus-visible {
 
 .chip {
   flex: 0 0 auto;
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  background: var(--panel-2);
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: var(--r-full);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--text-2);
+  background: transparent;
+}
+
+@media (hover: hover) {
+  .chip:hover:not(:disabled) {
+    background: var(--fill);
+  }
 }
 
 .chip.active {
-  background: var(--text);
-  color: var(--bg);
-  border-color: var(--text);
+  background: var(--fill);
+  color: var(--text);
+  font-weight: 650;
 }
+
+/* ------------------------------------------------------------- fields ---- */
 
 .field {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 13px;
-  color: var(--muted);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--text-2);
 }
 
 .field input,
-.field select {
+.field select,
+input.input {
   font: inherit;
-  font-size: 15px;
+  font-size: var(--fs-body);
+  font-weight: 400;
   color: var(--text);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
+  background: var(--fill);
+  border: 1px solid transparent;
+  border-radius: var(--r-m);
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  transition:
+    border-color var(--dur-1) var(--ease),
+    background-color var(--dur-1) var(--ease);
 }
 
+.field input:focus,
+.field select:focus,
+input.input:focus {
+  border-color: var(--accent-text);
+  background: var(--surface);
+  outline: none;
+}
+
+.field input::placeholder,
+input.input::placeholder {
+  color: var(--text-2);
+}
+
+/* A switch, from a checkbox. */
 .toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  font-size: 15px;
+  gap: var(--s-3);
+  min-height: 44px;
+  font-size: var(--fs-body);
 }
 
 .toggle input {
+  appearance: none;
+  flex: 0 0 auto;
+  position: relative;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  border-radius: var(--r-full);
+  background: var(--fill-strong);
+  cursor: pointer;
+  transition: background-color var(--dur-2) var(--ease);
+}
+
+.toggle input::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
   width: 20px;
   height: 20px;
-  accent-color: var(--accent);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  transition: transform var(--dur-2) var(--ease);
+}
+
+.toggle input:checked {
+  background: var(--accent);
+}
+
+.toggle input:checked::after {
+  transform: translateX(18px);
 }
 
 .slider {
   display: grid;
-  grid-template-columns: 96px 1fr 40px;
+  grid-template-columns: 88px 1fr 36px;
   align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  color: var(--muted);
+  gap: var(--s-3);
+  min-height: 36px;
+  font-size: var(--fs-caption);
+  color: var(--text-2);
 }
 
 .slider input[type='range'] {
   width: 100%;
+  margin: 0;
   accent-color: var(--accent);
 }
 
@@ -294,12 +490,54 @@ select:focus-visible {
   color: var(--text);
 }
 
+/* ------------------------------------------------------------ dialogs ---- */
+
+dialog.dialog {
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  border: none;
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-3);
+}
+
+dialog.dialog[open] {
+  animation: dialog-in var(--dur-2) var(--ease);
+}
+
+dialog.dialog::backdrop {
+  background: var(--scrim);
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-6) var(--s-6);
+}
+
+.help {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
 .spinner {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  border: 3px solid rgb(255 255 255 / 18%);
-  border-top-color: #fff;
+  border: 2.5px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-top-color: currentColor;
   animation: spin 0.8s linear infinite;
 }
 
@@ -314,6 +552,7 @@ select:focus-visible {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
