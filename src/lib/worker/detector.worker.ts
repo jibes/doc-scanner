@@ -3,7 +3,7 @@ import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import { heatmapsToQuad, type Detection } from '../detect/heatmap';
 import { clipToFrame, colourPlanes, quadSupported, searchQuad } from '../detect/quadSearch';
 import { toLuma, type FloatImage, type Quad, type RGBAImage } from '../imaging/image';
-import { quadArea, scaleQuad } from '../imaging/quad';
+import { plausibleQuad, quadArea, scaleQuad } from '../imaging/quad';
 import { refineQuad } from '../imaging/refine';
 import { sharpness } from '../imaging/sharpness';
 import { MODEL_INPUT } from '../detect/model';
@@ -75,12 +75,31 @@ const SEARCH_FACTOR = 2;
 const EDGE_REFINE_REACH = 4 * SEARCH_FACTOR;
 /** The edge search replaces a well-supported model quad only if it is clearly larger. */
 const MIN_GROWTH = 1.03;
+/**
+ * The model's quad is taken without the photo's edges confirming it only
+ * from this confidence up. Below it, DocAligner is often confidently wrong on
+ * busy scenes: a page among other papers on a pin board, its top edge put on
+ * a table rule a third of the way down.
+ */
+const MODEL_TRUST = 0.75;
+/** Confidence reported for a page found by the relaxed edge search alone. */
+const RELAXED_CONFIDENCE = 0.4;
 
 /**
  * The page in a still, from the model's quad checked against the photo's
- * edges (detect/quadSearch.ts): kept when all four sides are real edges and
- * no larger fully supported quad contains it, replaced by the edge search's
- * quad otherwise. Coordinates are those of `rgba` / `luma`.
+ * edges (detect/quadSearch.ts), in this order:
+ *
+ * 1. The model's quad when all four sides are real edges, unless a larger
+ *    fully supported quad contains it.
+ * 2. Otherwise the edge search's fully supported quad.
+ * 3. Otherwise the relaxed edge search's (bowed paper, a weak side): checked
+ *    against the photo, unlike the model's.
+ * 4. Otherwise the model's quad if the model is sure of it and it has the
+ *    shape of a photographed rectangle.
+ * 5. Otherwise nothing: the user places the corners (a guessed quad shown as
+ *    found would be worse).
+ *
+ * Coordinates are those of `rgba` / `luma`.
  */
 function findPage(
   rgba: RGBAImage,
@@ -93,22 +112,36 @@ function findPage(
   offFrame: boolean;
 } | null {
   const { width: w, height: h } = luma;
-  const model = detection ? refineQuad(luma, scaleQuad(detection.quad, w, h)) : null;
+  // Corners fitted locally: a pinned-up sheet bows (refine.ts).
+  const model = detection
+    ? refineQuad(luma, scaleQuad(detection.quad, w, h), undefined, { local: true })
+    : null;
   const planes = colourPlanes(rgba, SEARCH_FACTOR);
   const toPlanes = planes.width / w;
   const modelSmall = model ? scaleQuad(model, toPlanes) : null;
   const modelOk = modelSmall !== null && quadSupported(planes, modelSmall);
-  const search = searchQuad(planes, { contain: modelOk ? modelSmall : undefined });
-  if (
-    model &&
-    detection &&
-    (!search || (modelOk && quadArea(search.quad) < quadArea(modelSmall!) * MIN_GROWTH))
-  ) {
-    return { ...fitFrame(model, w, h), confidence: detection.confidence, source: 'model' };
+  const modelSure =
+    model !== null &&
+    detection !== null &&
+    detection.confidence >= MODEL_TRUST &&
+    plausibleQuad(model, w, h);
+  const search = searchQuad(planes, {
+    contain: modelOk ? modelSmall! : undefined,
+    relaxed: modelOk ? undefined : {},
+  });
+  const fromModel = () => ({
+    ...fitFrame(model!, w, h),
+    confidence: detection!.confidence,
+    source: 'model' as const,
+  });
+  if (modelOk && (!search || quadArea(search.quad) < quadArea(modelSmall!) * MIN_GROWTH)) {
+    return fromModel();
   }
+  if (!search && modelSure) return fromModel();
   if (!search) return null;
+  const strict = search.tier === 'strict';
   const fitted = fitFrame(
-    refineQuad(luma, scaleQuad(search.quad, 1 / toPlanes), EDGE_REFINE_REACH),
+    refineQuad(luma, scaleQuad(search.quad, 1 / toPlanes), EDGE_REFINE_REACH, { local: true }),
     w,
     h,
   );
@@ -116,7 +149,7 @@ function findPage(
     quad: fitted.quad,
     // The edge search has no calibrated confidence; report the model's
     // when it agreed on the page at all.
-    confidence: detection && modelOk ? detection.confidence : 0.5,
+    confidence: detection && modelOk ? detection.confidence : strict ? 0.5 : RELAXED_CONFIDENCE,
     source: 'edges',
     // A side on the frame's border (the page runs off there) or a clipped corner.
     offFrame: fitted.offFrame || (search.offFrame && onBorder(fitted.quad, w, h)),
