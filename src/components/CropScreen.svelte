@@ -210,7 +210,7 @@
     ctx.fillRect(0, 0, LOUPE, LOUPE);
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(bitmap, sx, sy, span * scaleToBitmap, span * scaleToBitmap, 0, 0, LOUPE, LOUPE);
-    ctx.strokeStyle = '#4f8cff';
+    ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(LOUPE / 2, LOUPE / 2 - 14);
@@ -228,10 +228,10 @@
 </script>
 
 <section class="screen crop">
-  <header class="topbar">
-    <button class="icon ghost" onclick={onDone} aria-label="Cancel"><Icon name="close" /></button>
-    <div class="title">Adjust crop</div>
-    <button class="primary" onclick={apply} disabled={!valid}>Done</button>
+  <header class="topbar column">
+    <button class="ghost cancel" onclick={onDone} aria-label="Cancel">Cancel</button>
+    <div class="title">Crop</div>
+    <button class="primary done" onclick={apply} disabled={!valid}>Done</button>
   </header>
 
   <div
@@ -284,22 +284,41 @@
     {/if}
   </div>
 
-  <div class="bottombar">
+  <div class="bottombar column">
     <button
-      class="icon"
+      class="icon ghost"
       onclick={() => page.detected && (quad = page.detected)}
       disabled={!page.detected}
     >
-      <Icon name="magic" /> Detected
+      <Icon name="magic" size={20} /> Detected
     </button>
-    <button class="icon" onclick={() => (quad = fullQuad(page.width, page.height))}>
-      <Icon name="expand" /> Full photo
+    <button class="icon ghost" onclick={() => (quad = fullQuad(page.width, page.height))}>
+      <Icon name="expand" size={20} /> Full photo
     </button>
-    {#if !valid}<span class="warn">Corners cross over</span>{/if}
+    <span class="warn" role="status">{valid ? '' : 'Corners cross over'}</span>
   </div>
 </section>
 
 <style>
+  .crop {
+    background: #000;
+  }
+
+  .topbar .title {
+    text-align: center;
+  }
+
+  .topbar .cancel {
+    margin-left: calc(-1 * var(--s-3));
+    padding: 0 var(--s-3);
+    font-weight: 500;
+  }
+
+  .topbar .done {
+    min-width: 72px;
+    border-radius: var(--r-full);
+  }
+
   .stage {
     position: relative;
     flex: 1;
@@ -325,50 +344,67 @@
 
   .edge {
     fill: none;
-    stroke: var(--accent);
-    stroke-width: 2;
+    stroke: #fff;
+    stroke-width: 1.5;
   }
 
   .edge.invalid {
     stroke: var(--err);
+    stroke-dasharray: 6 4;
   }
 
   .corner {
-    fill: rgb(79 140 255 / 25%);
+    fill: rgb(255 255 255 / 18%);
     stroke: #fff;
-    stroke-width: 2.5;
+    stroke-width: 2;
+    filter: drop-shadow(0 1px 2px rgb(0 0 0 / 50%));
   }
 
   .mid {
     fill: #fff;
-    stroke: rgb(0 0 0 / 40%);
+    filter: drop-shadow(0 1px 2px rgb(0 0 0 / 50%));
   }
 
   .loupe {
     position: absolute;
-    top: 12px;
-    right: 12px;
+    top: var(--s-3);
+    right: var(--s-3);
     width: 128px;
     height: 128px;
     border-radius: 50%;
-    border: 3px solid #fff;
-    box-shadow: 0 4px 18px rgb(0 0 0 / 50%);
+    border: 2px solid #fff;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
     pointer-events: none;
+    transition: border-color var(--dur-1) var(--ease);
   }
 
   .loupe.left {
     right: auto;
-    left: 12px;
+    left: var(--s-3);
   }
 
   /* Fine movement: the finger rested, the corner now moves at half speed. */
   .loupe.fine {
-    border-color: var(--accent);
+    border-color: #5b8cff;
+  }
+
+  .bottombar {
+    gap: var(--s-1);
+    padding-top: var(--s-2);
+  }
+
+  .bottombar .icon:first-child {
+    margin-left: -10px;
+  }
+
+  .bottombar .icon {
+    font-size: var(--fs-caption);
+    font-weight: 500;
   }
 
   .warn {
-    align-self: center;
+    margin-left: auto;
     color: var(--err);
-    font-size: 13px;
+    font-size: var(--fs-caption);
   }
 </style>

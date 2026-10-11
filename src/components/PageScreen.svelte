@@ -4,7 +4,7 @@
   import { session, type Page } from '../lib/store/session.svelte';
   import { FILTERS } from '../lib/filters';
   import { haptic } from '../lib/haptics';
-  import { toast } from '../lib/ui.svelte';
+  import { dock, toast } from '../lib/ui.svelte';
   import Icon from './Icon.svelte';
   import PageCanvas from './PageCanvas.svelte';
 
@@ -193,11 +193,13 @@
 <svelte:window onkeydown={keydown} />
 
 <section class="screen page">
-  <header class="topbar">
+  <header class="topbar column">
     <button class="icon ghost" onclick={onBack} aria-label="Back to document"
       ><Icon name="back" /></button
     >
-    <div class="title">Page {index + 1} of {session.pages.length}</div>
+    <div class="title">
+      Page {index + 1} <span class="of">of {session.pages.length}</span>
+    </div>
     <button
       class="icon ghost"
       onclick={() => onOpen(session.pages[index - 1].id)}
@@ -217,9 +219,10 @@
   </header>
 
   {#if isBlurred(page)}
-    <div class="blur-banner" role="status">
+    <div class="blur-banner column" role="status">
+      <Icon name="alert" size={18} />
       <span>This photo is blurred; text may come out broken.</span>
-      <button onclick={onRetake}>Retake</button>
+      <button class="text" onclick={onRetake}>Retake</button>
     </div>
   {/if}
 
@@ -266,12 +269,12 @@
       onpointercancel={() => (comparing = false)}
       aria-label="Hold to show the unfiltered page"
     >
-      <Icon name="eye" />
+      <Icon name="eye" size={20} />
     </button>
   </div>
 
-  <div class="panel">
-    <div class="chips" role="radiogroup" aria-label="Filter">
+  <div class="panel" use:dock>
+    <div class="chips filters" role="radiogroup" aria-label="Filter">
       {#each FILTERS as f (f.id)}
         <button
           class="chip"
@@ -287,7 +290,7 @@
     </div>
 
     {#if session.pages.length > 1 && differing > 0}
-      <button class="apply-all" onclick={applyToAll}>
+      <button class="text apply-all" onclick={applyToAll}>
         Apply this filter and adjustments to all pages
       </button>
     {/if}
@@ -312,7 +315,7 @@
           {/if}
         {/each}
         <button
-          class="reset"
+          class="text reset"
           onclick={() => session.update(page.id, { adjustments: { ...DEFAULT_ADJUSTMENTS } })}
         >
           Reset adjustments
@@ -321,51 +324,75 @@
     {/if}
 
     <div class="tools">
-      <button class="icon" onclick={() => (showAdjust = !showAdjust)} aria-pressed={showAdjust}>
+      <button
+        class="icon ghost"
+        onclick={() => (showAdjust = !showAdjust)}
+        aria-pressed={showAdjust}
+      >
         <Icon name="sliders" /><span>Adjust</span>
       </button>
-      <button class="icon" onclick={onCrop}><Icon name="crop" /><span>Crop</span></button>
-      <button class="icon" onclick={rotate}><Icon name="rotate" /><span>Rotate</span></button>
-      <button class="icon" onclick={onRetake}><Icon name="retake" /><span>Retake</span></button>
+      <button class="icon ghost" onclick={onCrop}><Icon name="crop" /><span>Crop</span></button>
+      <button class="icon ghost" onclick={rotate}><Icon name="rotate" /><span>Rotate</span></button>
+      <button class="icon ghost" onclick={onRetake}
+        ><Icon name="retake" /><span>Retake</span></button
+      >
+      <span class="divider" aria-hidden="true"></span>
       <button
-        class="icon"
+        class="icon ghost compact"
         onclick={() => session.move(page.id, -1)}
         disabled={index <= 0}
         aria-label="Move page earlier"
+        title="Move page earlier"
       >
-        <Icon name="left" />
+        <Icon name="toStart" />
       </button>
       <button
-        class="icon"
+        class="icon ghost compact"
         onclick={() => session.move(page.id, 1)}
         disabled={index >= session.pages.length - 1}
         aria-label="Move page later"
+        title="Move page later"
       >
-        <Icon name="right" />
+        <Icon name="toEnd" />
       </button>
-      <button class="icon danger" onclick={remove} aria-label="Delete page"
-        ><Icon name="trash" /></button
+      <button
+        class="icon ghost compact quiet"
+        onclick={remove}
+        aria-label="Delete page"
+        title="Delete page"><Icon name="trash" /></button
       >
     </div>
   </div>
 </section>
 
 <style>
+  .of {
+    color: var(--text-2);
+    font-weight: 500;
+  }
+
+  .topbar .title {
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
   .blur-banner {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 12px;
-    background: rgb(245 158 11 / 15%);
-    border-bottom: 1px solid rgb(245 158 11 / 40%);
+    gap: var(--s-2);
+    min-height: 44px;
     color: var(--warn);
-    font-size: 13px;
+    font-size: var(--fs-caption);
+    font-weight: 500;
   }
 
-  .blur-banner button {
-    padding: 6px 12px;
-    font-size: 13px;
+  .blur-banner span {
+    flex: 1;
+  }
+
+  .blur-banner .text {
+    margin-right: calc(-1 * var(--s-3));
+    min-height: 40px;
   }
 
   .viewport {
@@ -375,11 +402,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 14px;
-    background: #050506;
-  }
-
-  .viewport {
+    padding: var(--s-2) var(--s-6) var(--s-6);
+    background: var(--bg);
     touch-action: none;
     overflow: hidden;
   }
@@ -391,27 +415,21 @@
     align-items: center;
     justify-content: center;
     transform-origin: 0 0;
-    /* A slight overshoot: the page bounces back into place. */
-    transition: transform 0.32s cubic-bezier(0.34, 1.4, 0.64, 1);
+    /* A slight overshoot: the page settles back into place. */
+    transition: transform 0.32s cubic-bezier(0.34, 1.3, 0.64, 1);
   }
 
   .slide.dragging {
     transition: none;
   }
 
-  .apply-all {
-    align-self: center;
-    padding: 6px 12px;
-    font-size: 13px;
-    color: var(--accent);
-    background: transparent;
-    border-color: transparent;
-  }
-
   .viewport :global(.preview) {
     max-width: 100%;
     max-height: 100%;
-    box-shadow: 0 6px 30px rgb(0 0 0 / 60%);
+    border-radius: var(--r-xs);
+    box-shadow:
+      var(--shadow-paper),
+      0 12px 32px rgb(0 0 0 / 12%);
   }
 
   .viewport :global(.preview.hidden) {
@@ -420,80 +438,127 @@
 
   .working {
     position: absolute;
-    top: 18px;
-    left: 18px;
+    top: var(--s-4);
+    left: var(--s-4);
+    color: var(--text-2);
   }
 
   .working .spinner {
-    width: 22px;
-    height: 22px;
-    border-width: 2.5px;
+    width: 20px;
+    height: 20px;
+    border-width: 2px;
   }
 
   .compare {
     position: absolute;
-    right: 16px;
-    bottom: 16px;
-    border-radius: 999px;
-    padding: 10px;
-    background: rgb(0 0 0 / 55%);
-    backdrop-filter: blur(8px);
+    right: var(--s-4);
+    bottom: var(--s-4);
+    width: 44px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-full);
+    background: rgb(0 0 0 / 45%);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     touch-action: none;
     color: #fff;
   }
 
-  .compare :global(svg) {
-    width: 22px;
-    height: 22px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.9;
+  @media (hover: hover) {
+    .compare:hover:not(:disabled) {
+      background: rgb(0 0 0 / 60%);
+    }
   }
 
+  /* The tool tray: a sheet of its own under the page. */
   .panel {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 12px 12px calc(12px + var(--safe-bottom));
-    background: var(--panel);
-    border-top: 1px solid var(--border);
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-3) calc(var(--s-2) + var(--safe-bottom));
+    background: var(--surface);
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    box-shadow:
+      0 -1px 0 var(--line),
+      0 -8px 24px rgb(0 0 0 / 4%);
+  }
+
+  .panel > * {
+    width: 100%;
+    max-width: var(--column);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .filters {
+    justify-content: safe center;
+  }
+
+  .apply-all {
+    width: auto;
+    align-self: center;
+    min-height: 36px;
+    font-size: var(--fs-caption);
   }
 
   .sliders {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 4px 4px 0;
+    gap: var(--s-1);
+    padding: var(--s-2) var(--s-2) 0;
+    animation: open var(--dur-2) var(--ease);
+  }
+
+  @keyframes open {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
   }
 
   .reset {
     align-self: flex-end;
-    font-size: 13px;
-    padding: 6px 12px;
+    min-height: 36px;
+    font-size: var(--fs-caption);
   }
 
   .tools {
     display: flex;
-    justify-content: space-between;
-    gap: 4px;
+    align-items: center;
+    gap: 0;
   }
 
   .tools .icon {
+    flex: 1;
     flex-direction: column;
     gap: 2px;
-    font-size: 11px;
-    padding: 6px 4px;
     min-width: 0;
-    flex: 1;
-    background: transparent;
-    border-color: transparent;
+    min-height: 52px;
+    padding: 4px 2px;
+    font-size: var(--fs-micro);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+  }
+
+  .tools .icon.compact {
+    flex: 0 0 44px;
   }
 
   .tools .icon[aria-pressed='true'] {
-    color: var(--accent);
+    color: var(--accent-text);
+    background: var(--accent-soft);
   }
 
-  .danger {
-    color: var(--err);
+  .divider {
+    flex: 0 0 1px;
+    align-self: stretch;
+    margin: 12px 4px;
+    background: var(--line);
+  }
+
+  .quiet {
+    color: var(--text-2);
   }
 </style>

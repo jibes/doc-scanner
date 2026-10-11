@@ -156,7 +156,7 @@
   .pick {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--s-2);
     min-width: 0;
   }
 
@@ -164,17 +164,18 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 8px;
+    gap: var(--s-2);
   }
 
   .label {
-    font-size: 13px;
-    color: var(--muted);
+    font-size: var(--fs-caption);
+    font-weight: 600;
+    color: var(--text);
   }
 
   .none {
-    font-size: 12.5px;
-    color: var(--muted);
+    font-size: var(--fs-caption);
+    color: var(--text-2);
   }
 
   .selected,
@@ -188,7 +189,7 @@
   }
 
   .options {
-    max-height: 168px;
+    max-height: 172px;
     overflow-y: auto;
     padding: 2px;
   }
@@ -197,10 +198,13 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 34px;
-    padding: 6px 12px;
-    border-radius: 999px;
-    font-size: 13px;
+    min-height: 36px;
+    padding: 0 var(--s-3);
+    border-radius: var(--r-full);
+    font-size: var(--fs-caption);
+    font-weight: 500;
+    color: var(--text);
+    background: var(--fill);
     max-width: 100%;
   }
 
@@ -212,55 +216,69 @@
 
   .chip.option.tinted::before {
     content: '';
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--chip-bg);
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
     flex: 0 0 auto;
   }
 
   .chip.on {
     background: var(--chip-bg, var(--accent));
-    border-color: var(--chip-bg, var(--accent));
-    color: var(--chip-fg, #fff);
+    color: var(--chip-fg, var(--on-accent));
+    font-weight: 600;
   }
 
   .chip.option.on::before {
-    background: var(--chip-fg, #fff);
+    background: var(--chip-fg, var(--on-accent));
   }
 
-  .chip.on:hover:not(:disabled) {
-    background: var(--chip-bg, var(--accent-strong));
-    filter: brightness(0.92);
+  @media (hover: hover) {
+    .chip.on:hover:not(:disabled) {
+      background: var(--chip-bg, var(--accent-strong));
+      filter: brightness(0.94);
+    }
   }
 
   .chip.missing {
     background: transparent;
     color: var(--warn);
-    border: 1px dashed var(--warn);
+    box-shadow: inset 0 0 0 1px var(--warn);
   }
 
   .x {
     font-size: 16px;
     line-height: 1;
-    opacity: 0.8;
+    opacity: 0.7;
   }
 
   .search {
     font: inherit;
-    font-size: 15px;
+    font-size: var(--fs-body);
     color: var(--text);
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 9px 12px;
+    background: var(--fill);
+    border: 1px solid transparent;
+    border-radius: var(--r-m);
+    min-height: 40px;
+    padding: 0 var(--s-3);
     min-width: 0;
+  }
+
+  .search::placeholder {
+    color: var(--text-2);
+  }
+
+  .search:focus {
+    outline: none;
+    border-color: var(--accent-text);
+    background: var(--surface);
   }
 
   .hint {
     align-self: center;
-    font-size: 12.5px;
-    color: var(--muted);
+    font-size: var(--fs-caption);
+    color: var(--text-2);
     padding: 4px 2px;
   }
 </style>

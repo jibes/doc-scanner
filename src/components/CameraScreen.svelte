@@ -9,7 +9,7 @@
   import { addPhoto as addToDocument, importNote, importPhotos } from '../lib/importPhotos';
   import { detector } from '../lib/services';
   import { session } from '../lib/store/session.svelte';
-  import { errorMessage, toast } from '../lib/ui.svelte';
+  import { dock, errorMessage, toast } from '../lib/ui.svelte';
   import Icon from './Icon.svelte';
   import PageCanvas from './PageCanvas.svelte';
 
@@ -477,8 +477,10 @@
     {#if cameraError}
       <div class="notice">
         <p>{cameraError}</p>
-        <button onclick={() => void startCamera()}>Try again</button>
-        <button onclick={() => fileInput?.click()}>Choose photos instead</button>
+        <div class="notice-actions">
+          <button class="primary" onclick={() => void startCamera()}>Try again</button>
+          <button onclick={() => fileInput?.click()}>Choose photos instead</button>
+        </div>
       </div>
     {:else if !cameraReady}
       <div class="notice"><div class="spinner"></div></div>
@@ -492,7 +494,7 @@
       {:else if capturing}
         <span class="pill" class:hold={exposing}>{exposing ? 'Hold still…' : 'Processing…'}</span>
       {:else if added !== null}
-        <span class="pill good">Page {added} added</span>
+        <span class="pill good"><Icon name="check" size={18} /> Page {added} added</span>
       {:else if dark && cameraReady}
         <span class="pill warn">
           {torchAvailable && !torchOn
@@ -530,14 +532,14 @@
             onclick={() => onAutoCaptureChange(!autoCapture)}
             aria-pressed={autoCapture}
           >
-            Auto
+            <span class="dot" aria-hidden="true"></span>Auto
           </button>
         {/if}
       </div>
     </div>
   </div>
 
-  <div class="controls">
+  <div class="controls" use:dock>
     <button class="icon round" onclick={() => fileInput?.click()} aria-label="Import photos">
       <Icon name="gallery" />
     </button>
@@ -592,6 +594,7 @@
     position: relative;
     flex: 1;
     overflow: hidden;
+    border-radius: 0 0 var(--r-xl) var(--r-xl);
   }
 
   video {
@@ -611,15 +614,17 @@
   }
 
   .overlay polygon {
-    fill: rgb(79 140 255 / 18%);
-    stroke: var(--accent);
-    stroke-width: 3;
+    fill: rgb(91 140 255 / 14%);
+    stroke: #5b8cff;
+    stroke-width: 2.5;
     stroke-linejoin: round;
-    transition: fill 0.2s ease;
+    transition:
+      fill var(--dur-2) var(--ease),
+      stroke var(--dur-2) var(--ease);
   }
 
   .overlay polygon.steady {
-    fill: rgb(34 197 94 / 22%);
+    fill: rgb(116 201 149 / 18%);
     stroke: var(--good);
   }
 
@@ -627,7 +632,7 @@
     position: absolute;
     inset: 0;
     background: #fff;
-    opacity: 0.75;
+    opacity: 0.7;
     pointer-events: none;
   }
 
@@ -638,15 +643,25 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 14px;
-    padding: 32px;
+    gap: var(--s-5);
+    padding: var(--s-8);
     text-align: center;
-    color: var(--muted);
+    color: var(--text-2);
   }
 
   .notice p {
     margin: 0;
-    max-width: 36ch;
+    max-width: 32ch;
+    font-size: var(--fs-body);
+    line-height: 1.5;
+    color: var(--text);
+  }
+
+  .notice-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    width: min(280px, 100%);
   }
 
   .top {
@@ -656,83 +671,127 @@
     right: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: calc(10px + var(--safe-top)) 12px 10px;
-    background: linear-gradient(rgb(0 0 0 / 55%), transparent);
+    gap: var(--s-2);
+    padding: calc(var(--s-3) + var(--safe-top)) var(--s-4) var(--s-6);
+    background: linear-gradient(rgb(0 0 0 / 45%), transparent);
   }
 
   .top-right {
     display: flex;
-    gap: 8px;
+    gap: var(--s-2);
     margin-left: auto;
   }
 
+  /* Controls over the picture: dark glass discs, legible over any image. */
   .round {
-    border-radius: 999px;
-    background: rgb(0 0 0 / 40%);
-    border: 1px solid rgb(255 255 255 / 15%);
+    border-radius: var(--r-full);
+    background: rgb(0 0 0 / 38%);
     color: #fff;
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
   }
 
-  .round.on {
-    background: #fff;
-    color: #000;
+  @media (hover: hover) {
+    .round:hover:not(:disabled) {
+      background: rgb(0 0 0 / 55%);
+    }
+  }
+
+  @media (hover: hover) {
+    .round.on,
+    .round.on:hover:not(:disabled) {
+      background: #fff;
+      color: #000;
+    }
   }
 
   .auto {
-    padding: 9px 14px;
-    font-size: 13px;
-    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: 0 var(--s-4) 0 14px;
+    font-size: var(--fs-caption);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+  }
+
+  .auto .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    transition: background-color var(--dur-1) var(--ease);
+  }
+
+  .auto.on .dot {
+    background: var(--good);
+    border-color: var(--good);
   }
 
   .status {
     position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 16px;
+    left: var(--s-4);
+    right: var(--s-4);
+    bottom: var(--s-5);
     display: flex;
     justify-content: center;
     pointer-events: none;
   }
 
   .pill {
-    background: rgb(0 0 0 / 60%);
-    backdrop-filter: blur(10px);
-    border-radius: 999px;
-    padding: 6px 14px;
-    font-size: 13px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: var(--s-2) var(--s-4);
+    border-radius: var(--r-full);
+    background: rgb(0 0 0 / 58%);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    color: #fff;
+    font-size: var(--fs-body);
+    font-weight: 500;
+    text-align: center;
+    animation: pill-in var(--dur-2) var(--ease);
   }
 
+  @keyframes pill-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+
+  /* The moment that matters: keep still. */
   .pill.hold {
-    background: rgb(245 158 11 / 85%);
+    background: #fff;
+    color: #000;
+    font-weight: 650;
+  }
+
+  .pill.warn {
+    color: #ffd58a;
+  }
+
+  .pill.good {
+    background: #fff;
     color: #000;
     font-weight: 600;
   }
 
-  .pill.warn {
-    color: var(--warn);
-  }
-
-  .pill.good {
-    background: rgb(34 197 94 / 85%);
-    color: #04140a;
-    font-weight: 600;
+  .pill.good :global(svg) {
+    color: #1f7a45;
+    stroke-width: 2.25;
   }
 
   .pop {
-    animation: pop 0.35s ease;
+    display: inline-block;
+    animation: pop 0.3s var(--ease);
   }
 
   @keyframes pop {
     40% {
-      transform: scale(1.35);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .pop {
-      animation: none;
+      transform: scale(1.25);
     }
   }
 
@@ -740,26 +799,51 @@
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    gap: 12px;
-    padding: 18px 16px calc(22px + var(--safe-bottom));
+    gap: var(--s-3);
+    padding: var(--s-5) var(--s-4) calc(var(--s-6) + var(--safe-bottom));
     background: #000;
   }
 
   .controls > .round {
-    width: 56px;
-    height: 56px;
+    width: 52px;
+    height: 52px;
     justify-self: start;
+    background: rgb(255 255 255 / 12%);
   }
 
+  @media (hover: hover) {
+    .controls > .round:hover:not(:disabled) {
+      background: rgb(255 255 255 / 20%);
+    }
+  }
+
+  /* White disc in a ring; the ring fills while the page is held steady. */
   .shutter {
-    width: 76px;
-    height: 76px;
+    width: 80px;
+    height: 80px;
+    min-height: 0;
     border-radius: 50%;
     padding: 0;
-    border: 4px solid #fff;
     background:
-      radial-gradient(circle, #fff 0 60%, transparent 61%),
-      conic-gradient(var(--good) calc(var(--steady) * 360deg), transparent 0);
+      radial-gradient(circle closest-side, #fff 0 79%, #000 80% 87%, transparent 88%),
+      conic-gradient(var(--good) calc(var(--steady) * 1turn), #fff 0);
+    transition: transform var(--dur-1) var(--ease);
+  }
+
+  @media (hover: hover) {
+    .shutter:hover:not(:disabled) {
+      background:
+        radial-gradient(circle closest-side, #fff 0 79%, #000 80% 87%, transparent 88%),
+        conic-gradient(var(--good) calc(var(--steady) * 1turn), #fff 0);
+    }
+  }
+
+  .shutter:active:not(:disabled) {
+    transform: scale(0.92);
+  }
+
+  .shutter:disabled {
+    opacity: 0.5;
   }
 
   .end {
@@ -773,25 +857,28 @@
     align-items: center;
     gap: 10px;
     max-width: 100%;
-    padding: 5px 14px 5px 5px;
-    border-radius: 14px;
-    border: none;
+    min-height: 56px;
+    padding: 6px var(--s-4) 6px 6px;
+    border-radius: var(--r-l);
     background: var(--accent);
     color: #fff;
     text-align: left;
   }
 
-  .done:hover:not(:disabled) {
-    background: var(--accent-strong);
+  @media (hover: hover) {
+    .done:hover:not(:disabled) {
+      background: var(--accent-strong, #2f5bc9);
+    }
   }
 
   .thumb {
     flex: 0 0 auto;
-    width: 40px;
-    height: 48px;
-    border-radius: 8px;
+    width: 34px;
+    height: 44px;
+    border-radius: var(--r-xs);
     overflow: hidden;
     background: #fff;
+    box-shadow: 0 1px 4px rgb(0 0 0 / 30%);
   }
 
   .thumb :global(.thumb-canvas) {
@@ -810,12 +897,14 @@
   }
 
   .done-text strong {
-    font-size: 16px;
+    font-size: var(--fs-body);
+    font-weight: 650;
   }
 
   .done-text span {
     font-size: 12px;
     opacity: 0.85;
+    font-variant-numeric: tabular-nums;
   }
 
   /* Small phones: the words matter more than the picture. */
@@ -825,7 +914,7 @@
     }
 
     .done {
-      padding: 8px 14px;
+      padding: 6px var(--s-4);
     }
   }
 </style>

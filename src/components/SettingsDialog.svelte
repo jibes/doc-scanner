@@ -128,9 +128,12 @@
   ];
 </script>
 
-<dialog bind:this={dialog} aria-label="Settings">
+<dialog bind:this={dialog} class="dialog settings" aria-label="Settings">
   {#if draft}
     <form method="dialog" onsubmit={(e) => (e.preventDefault(), save())}>
+      <header class="head">
+        <h1>Settings</h1>
+      </header>
       <div class="body">
         <h2>Paperless-ngx</h2>
         <p class="help">
@@ -164,7 +167,7 @@
           />
         </label>
         <div class="row">
-          <button type="button" onclick={() => void test()} disabled={testing}>
+          <button type="button" class="test" onclick={() => void test()} disabled={testing}>
             {testing ? 'Testing…' : 'Test connection'}
           </button>
           {#if report}
@@ -179,7 +182,7 @@
               {#each report.checks as check (check.id)}
                 <li class={check.status}>
                   <span class="mark" aria-hidden="true">{MARK[check.status]}</span>
-                  <span class="text">
+                  <span class="check-text">
                     <span class="what">{check.label}</span>
                     <span class="sr-only"
                       >: {check.status === 'ok'
@@ -202,7 +205,7 @@
           <h3>Defaults for new documents</h3>
           <button
             type="button"
-            class="ghost small"
+            class="text small"
             onclick={() => void reloadLists(true)}
             disabled={lists.loading || !draftConfig() || !isConfigured(draftConfig()!)}
           >
@@ -264,7 +267,7 @@
         </p>
       </div>
       <div class="actions">
-        <button type="button" onclick={() => dialog?.close()}>Cancel</button>
+        <button type="button" class="ghost" onclick={() => dialog?.close()}>Cancel</button>
         <button type="submit" class="primary">Save</button>
       </div>
     </form>
@@ -274,17 +277,6 @@
 <style>
   dialog {
     width: min(520px, calc(100vw - 24px));
-    max-height: calc(100dvh - 48px);
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 18px;
-    background: var(--panel);
-    color: var(--text);
-  }
-
-  dialog::backdrop {
-    background: rgb(0 0 0 / 65%);
-    backdrop-filter: blur(4px);
   }
 
   form {
@@ -293,28 +285,38 @@
     max-height: calc(100dvh - 48px);
   }
 
+  .head {
+    padding: var(--s-6) var(--s-6) var(--s-2);
+  }
+
+  h1 {
+    margin: 0;
+    font-size: var(--fs-heading);
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+
   .body {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding: 20px;
+    gap: var(--s-4);
+    padding: var(--s-2) var(--s-6) var(--s-6);
     overflow-y: auto;
   }
 
+  /* Sections: a quiet heading with a hairline above, no boxes. */
   h2 {
-    margin: 8px 0 0;
-    font-size: 15px;
+    margin: var(--s-4) 0 0;
+    padding-top: var(--s-5);
+    border-top: 1px solid var(--line);
+    font-size: var(--fs-large);
+    font-weight: 650;
   }
 
   h2:first-child {
     margin-top: 0;
-  }
-
-  .help {
-    margin: 0;
-    font-size: 12.5px;
-    color: var(--muted);
-    line-height: 1.5;
+    padding-top: var(--s-2);
+    border-top: none;
   }
 
   .help.error {
@@ -327,30 +329,42 @@
 
   h3 {
     margin: 0;
-    font-size: 13.5px;
+    font-size: var(--fs-body);
     font-weight: 600;
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--s-3);
   }
 
   .row.spread {
     justify-content: space-between;
-    margin-top: 4px;
+    margin-top: var(--s-1);
   }
 
   .small {
-    padding: 6px 10px;
-    font-size: 13px;
+    min-height: 36px;
+    font-size: var(--fs-caption);
+    margin-right: calc(-1 * var(--s-3));
   }
 
   .verdict {
-    font-size: 13.5px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-caption);
     font-weight: 600;
     color: var(--good);
+  }
+
+  .verdict::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
   }
 
   .verdict.bad {
@@ -360,53 +374,54 @@
   .checks {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--s-3);
     margin: 0;
-    padding: 12px;
+    padding: var(--s-4);
     list-style: none;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    background: var(--bg);
+    border-radius: var(--r-l);
     -webkit-user-select: text;
     user-select: text;
   }
 
   .checks li {
     display: flex;
-    gap: 10px;
-    font-size: 13px;
+    gap: var(--s-3);
+    font-size: var(--fs-caption);
   }
 
   .mark {
     flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
+    margin-top: 1px;
     border-radius: 50%;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
-    color: #fff;
-    background: var(--muted);
+    line-height: 1;
+    color: var(--text-2);
+    box-shadow: inset 0 0 0 1.5px currentColor;
   }
 
   .ok .mark {
-    background: var(--good);
+    color: var(--good);
   }
 
   .warn .mark {
-    background: var(--warn);
+    color: var(--warn);
   }
 
   .fail .mark {
-    background: var(--err);
+    color: var(--err);
   }
 
   .skip {
-    opacity: 0.65;
+    opacity: 0.6;
   }
 
-  .text {
+  .check-text {
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -419,28 +434,26 @@
   }
 
   .detail {
-    color: var(--muted);
+    color: var(--text-2);
     line-height: 1.45;
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   code {
     font-size: 12px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--fill);
   }
 
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 10px;
-    padding: 14px 20px;
-    border-top: 1px solid var(--border);
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-6) var(--s-4);
+    border-top: 1px solid var(--line);
+  }
+
+  .actions .primary {
+    min-width: 96px;
   }
 </style>

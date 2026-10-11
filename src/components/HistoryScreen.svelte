@@ -272,106 +272,114 @@
 </script>
 
 <section class="screen history">
-  <header class="topbar">
+  <header class="topbar column">
     <button class="icon ghost" onclick={onBack} aria-label="Back"><Icon name="back" /></button>
     <div class="title">History</div>
   </header>
 
   {#if loaded && entries.length === 0}
-    <div class="empty">
-      <Icon name="history" />
+    <div class="empty column">
+      <span class="empty-art" aria-hidden="true"><Icon name="history" size={28} /></span>
       <p>Documents you save, share or upload appear here.</p>
     </div>
   {:else}
-    <ul class="list">
-      {#each entries as entry (entry.id)}
-        <li class="entry">
-          <button
-            class="thumb"
-            onclick={() => view(entry)}
-            disabled={!entry.pdf}
-            aria-label="Open {entry.title}"
-          >
-            {#if entry.thumb}
-              <img use:blobSrc={entry.thumb} alt="" />
-            {:else}
-              <Icon name="scan" />
-            {/if}
-          </button>
-          <div class="info">
-            <div class="name">{entry.title}</div>
-            <div class="meta">
-              {dateFormat.format(entry.createdAt)} · {entry.pages}
-              {entry.pages === 1 ? 'page' : 'pages'} · {size(entry.bytes)}
-            </div>
-            <div class="status" class:bad={entry.outcome === 'failure'}>
-              {#if entry.queued}
-                Waiting to upload
-                <button class="link" onclick={() => void flushUploadQueue()}>Retry now</button>
-              {:else}
-                {entry.kind === 'upload' && entry.outcome ? OUTCOME[entry.outcome] : 'Saved as PDF'}
-              {/if}
-              {#if !entry.pdf}· file no longer kept{/if}
-            </div>
-          </div>
-          <div class="actions">
+    <div class="scroll">
+      <ul class="list column">
+        {#each entries as entry (entry.id)}
+          {@const state = entry.queued
+            ? 'queued'
+            : entry.kind === 'upload' && entry.outcome
+              ? entry.outcome
+              : 'saved'}
+          <li class="entry">
             <button
-              class="edit"
-              onclick={() => void editAgain(entry)}
-              disabled={!editable.has(entry.id)}
-              aria-label="Edit {entry.title} again"
-              title={editable.has(entry.id)
-                ? 'Open its pages as the document'
-                : 'Its pages are no longer kept'}
+              class="thumb"
+              onclick={() => view(entry)}
+              disabled={!entry.pdf}
+              aria-label="Open {entry.title}"
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 20h9" />
-                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
-              </svg>
-              Edit again
+              {#if entry.thumb}
+                <img use:blobSrc={entry.thumb} alt="" />
+              {:else}
+                <Icon name="scan" />
+              {/if}
             </button>
-            {#if sharing}
+            <div class="info">
+              <div class="name">{entry.title}</div>
+              <div class="meta">
+                {dateFormat.format(entry.createdAt)} · {entry.pages}
+                {entry.pages === 1 ? 'page' : 'pages'} · {size(entry.bytes)}
+              </div>
+              <div class="status {state}">
+                <span class="dot" aria-hidden="true"></span>
+                {#if entry.queued}
+                  Waiting to upload
+                  <button class="link" onclick={() => void flushUploadQueue()}>Retry now</button>
+                {:else}
+                  {entry.kind === 'upload' && entry.outcome
+                    ? OUTCOME[entry.outcome]
+                    : 'Saved as PDF'}
+                {/if}
+                {#if !entry.pdf}<span class="gone">· file no longer kept</span>{/if}
+              </div>
+            </div>
+            <div class="actions">
+              <button
+                class="text edit"
+                onclick={() => void editAgain(entry)}
+                disabled={!editable.has(entry.id)}
+                aria-label="Edit {entry.title} again"
+                title={editable.has(entry.id)
+                  ? 'Open its pages as the document'
+                  : 'Its pages are no longer kept'}
+              >
+                <Icon name="edit" size={16} />
+                Edit again
+              </button>
+              {#if sharing}
+                <button
+                  class="icon ghost"
+                  onclick={() => void share(entry)}
+                  disabled={!entry.pdf}
+                  aria-label="Share {entry.title}"
+                >
+                  <Icon name="share" size={20} />
+                </button>
+              {/if}
               <button
                 class="icon ghost"
-                onclick={() => void share(entry)}
+                onclick={() => void share(entry, true)}
                 disabled={!entry.pdf}
-                aria-label="Share {entry.title}"
+                aria-label="Download {entry.title}"
               >
-                <Icon name="share" />
+                <Icon name="download" size={20} />
               </button>
-            {/if}
-            <button
-              class="icon ghost"
-              onclick={() => void share(entry, true)}
-              disabled={!entry.pdf}
-              aria-label="Download {entry.title}"
-            >
-              <Icon name="download" />
-            </button>
-            <button
-              class="icon ghost"
-              onclick={() => void upload(entry)}
-              disabled={!entry.pdf || uploading.has(entry.id)}
-              aria-label="Send {entry.title} to Paperless"
-              title="Send to Paperless"
-            >
-              <Icon name="leaf" />
-            </button>
-            <button
-              class="icon ghost danger"
-              onclick={() => remove(entry)}
-              aria-label="Remove {entry.title} from history"
-            >
-              <Icon name="trash" />
-            </button>
-          </div>
-        </li>
-      {/each}
-    </ul>
-    <p class="note">
-      The last 15 PDFs are kept on this device for sharing again, and the pages of the last 10
-      documents for editing again.
-    </p>
+              <button
+                class="icon ghost"
+                onclick={() => void upload(entry)}
+                disabled={!entry.pdf || uploading.has(entry.id)}
+                aria-label="Send {entry.title} to Paperless"
+                title="Send to Paperless"
+              >
+                <Icon name="leaf" size={20} />
+              </button>
+              <button
+                class="icon ghost"
+                onclick={() => remove(entry)}
+                aria-label="Remove {entry.title} from history"
+                title="Remove from history"
+              >
+                <Icon name="trash" size={20} />
+              </button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+      <p class="note column">
+        The last 15 PDFs are kept on this device for sharing again, and the pages of the last 10
+        documents for editing again.
+      </p>
+    </div>
   {/if}
 </section>
 
@@ -382,38 +390,61 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 12px;
-    color: var(--muted);
-    padding: 32px;
+    gap: var(--s-4);
+    padding-bottom: var(--s-10);
+    color: var(--text-2);
     text-align: center;
   }
 
-  .empty :global(svg) {
-    width: 40px;
-    height: 40px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
+  .empty-art {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: var(--fill);
+  }
+
+  .empty p {
+    margin: 0;
+    max-width: 28ch;
+    line-height: 1.5;
+  }
+
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
   }
 
   .list {
     list-style: none;
     margin: 0;
-    padding: 8px 0;
-    overflow-y: auto;
-    flex: 1;
+    padding-top: var(--s-1);
+    padding-bottom: var(--s-2);
   }
 
   /* Thumbnail on the left; name and details on top, actions in a row below,
      so a long title and the date get the full width on a phone. */
   .entry {
+    position: relative;
     display: grid;
     grid-template-columns: auto 1fr;
-    column-gap: 12px;
-    row-gap: 6px;
+    column-gap: var(--s-4);
+    row-gap: var(--s-1);
     align-items: start;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
+    padding: var(--s-4) 0 var(--s-2);
+  }
+
+  /* Hairlines between entries, from the text column on. */
+  .entry + .entry::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 64px;
+    right: 0;
+    height: 1px;
+    background: var(--line);
   }
 
   .entry .thumb {
@@ -422,31 +453,36 @@
 
   .entry .actions {
     grid-column: 2;
-    align-items: center;
-  }
-
-  .entry .actions .edit {
-    margin-right: auto;
   }
 
   .info {
-    flex: 1;
     min-width: 0;
   }
 
   .thumb {
     flex: none;
-    width: 44px;
-    height: 58px;
+    width: 48px;
+    height: 64px;
+    min-height: 0;
     padding: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--panel-2);
-    color: var(--muted);
+    border-radius: var(--r-xs);
+    background: var(--surface);
+    box-shadow: var(--shadow-paper);
+    color: var(--text-2);
+  }
+
+  @media (hover: hover) {
+    .thumb:hover:not(:disabled) {
+      background: var(--surface);
+    }
+  }
+
+  .thumb:disabled {
+    opacity: 0.6;
   }
 
   .thumb img {
@@ -456,15 +492,8 @@
     object-position: top;
   }
 
-  .thumb :global(svg) {
-    width: 22px;
-    height: 22px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-  }
-
   .name {
+    font-size: var(--fs-body);
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -473,63 +502,104 @@
 
   .meta,
   .status {
-    font-size: 12.5px;
-    color: var(--muted);
+    font-size: var(--fs-caption);
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .meta {
+    margin-top: 2px;
+  }
+
+  .status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0 6px;
+    margin-top: 2px;
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+  }
+
+  .status.success .dot {
+    background: var(--good);
+    opacity: 1;
+  }
+
+  .status.queued .dot {
+    background: var(--warn);
+    opacity: 1;
+  }
+
+  .status.failure {
+    color: var(--err);
+  }
+
+  .status.failure .dot {
+    opacity: 1;
   }
 
   .link {
-    padding: 0 0 0 6px;
-    border: none;
+    min-height: 0;
+    padding: 0;
+    border-radius: 0;
     background: none;
-    color: var(--accent);
+    color: var(--accent-text);
     font: inherit;
-    text-decoration: underline;
+    font-weight: 600;
   }
 
-  .status.bad {
-    color: var(--err);
+  @media (hover: hover) {
+    .link:hover:not(:disabled) {
+      background: none;
+      text-decoration: underline;
+    }
   }
 
   .actions {
     display: flex;
-    gap: 2px;
+    align-items: center;
+    margin-left: -12px;
+    margin-right: -10px;
+    color: var(--text-2);
+  }
+
+  .actions .icon {
+    color: var(--text-2);
+  }
+
+  @media (hover: hover) {
+    .actions .icon:hover:not(:disabled) {
+      color: var(--text);
+    }
   }
 
   .edit {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 5px 10px 5px 8px;
-    border-radius: 999px;
-    font-size: 12.5px;
+    gap: 6px;
+    margin-right: auto;
+    font-size: var(--fs-caption);
     font-weight: 600;
-    color: var(--accent);
-    background: var(--panel-2);
-  }
-
-  .edit svg {
-    width: 14px;
-    height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
   }
 
   .edit:disabled {
-    color: var(--muted);
-  }
-
-  .danger {
-    color: var(--err);
+    color: var(--text-2);
   }
 
   .note {
     margin: 0;
-    padding: 12px 16px calc(12px + var(--safe-bottom));
+    padding-top: var(--s-4);
+    padding-bottom: calc(var(--s-6) + var(--safe-bottom));
     font-size: 12px;
-    color: var(--muted);
+    line-height: 1.5;
+    color: var(--text-2);
     text-align: center;
   }
 </style>

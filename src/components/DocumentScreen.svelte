@@ -26,6 +26,7 @@
   import { session, type Page } from '../lib/store/session.svelte';
   import { suggestTitle } from '../lib/titleSuggest';
   import {
+    dock,
     endTask,
     errorMessage,
     isAbort,
@@ -197,9 +198,6 @@
       label: progress >= 1 ? 'ready to export' : PHASE_LABEL[phase],
     };
   }
-
-  /** Circumference of the readiness ring (r = 8). */
-  const RING = 2 * Math.PI * 8;
 
   /* ---------------------------------------------------- suggested title ---- */
 
@@ -678,14 +676,36 @@
   }
 
   /*
-   * The suggestion bar sits above the grid. Which page is first changes
-   * while a page is dragged across the first place; showing or hiding the bar
-   * then would shift every tile under the finger, so it waits for the drop.
+   * The suggestion sits in the title's subtitle line, which keeps its height,
+   * so it never moves the grid. Which page is first changes while a page is
+   * dragged across the first place; the offer waits for the drop.
    */
   let suggestion = $state<string | null>(null);
   $effect(() => {
     const next = offered;
     if (!dragId) suggestion = next;
+  });
+
+  /* Hairlines only where the pages scroll under the bars. */
+  let scrolledTop = $state(false);
+  let moreBelow = $state(false);
+
+  function measureScroll() {
+    const el = grid;
+    if (!el) return;
+    scrolledTop = el.scrollTop > 0;
+    moreBelow = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+  }
+
+  $effect(() => {
+    void session.pages.length;
+    void selecting;
+    const el = grid;
+    if (!el) return;
+    const observer = new ResizeObserver(measureScroll);
+    observer.observe(el);
+    void tick().then(measureScroll);
+    return () => observer.disconnect();
   });
 
   // While dragging, the page must not scroll under the finger.
@@ -701,30 +721,21 @@
 </script>
 
 <section class="screen document">
-  {#if selecting}
-    <header class="topbar">
+  <header class="topbar column">
+    {#if selecting}
       <button class="icon ghost" onclick={stopSelecting} aria-label="Done selecting">
         <Icon name="close" />
       </button>
-      <div class="title" aria-live="polite">
+      <div class="title count" aria-live="polite">
         {selection.length ? `${selection.length} selected` : 'Select pages'}
       </div>
-      <button class="ghost text-button" onclick={selectAll}>
+      <button class="text" onclick={selectAll}>
         {selection.length === session.pages.length ? 'None' : 'All'}
       </button>
-    </header>
-  {:else}
-    <header class="topbar">
-      <input
-        class="title-input"
-        value={session.title}
-        {placeholder}
-        oninput={(e) => session.setTitle(e.currentTarget.value)}
-        aria-label="Document title"
-        enterkeyhint="done"
-      />
+    {:else}
+      <div class="title"></div>
       {#if session.pages.length > 1}
-        <button class="ghost text-button" onclick={startSelecting}>Select</button>
+        <button class="text" onclick={startSelecting}>Select</button>
       {/if}
       <button
         class="icon ghost history"
@@ -739,44 +750,69 @@
       <button class="icon ghost" onclick={onSettings} aria-label="Settings">
         <Icon name="settings" />
       </button>
-    </header>
-    {#if suggestion}
-      <div class="suggest">
-        <span>Title from page 1:</span>
-        <button class="chip suggest-chip" onclick={() => suggestion && useSuggestion(suggestion)}>
-          Use “{suggestion}”
-        </button>
-        <button
-          class="icon ghost dismiss"
-          onclick={() => (dismissed = suggestion)}
-          aria-label="Dismiss the suggested title"
-        >
-          <Icon name="close" />
-        </button>
-      </div>
     {/if}
-  {/if}
+  </header>
 
   {#if session.pages.length === 0}
-    <div class="empty">
-      <div class="empty-art" aria-hidden="true"><Icon name="scan" /></div>
-      <h2>Scan a document</h2>
+    <div class="empty column">
+      <div class="sheet-art" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <h1>Scan a document</h1>
       <p>
         Point the camera at a page. Edges are found automatically and the photo is taken when you
         hold still. Add as many pages as you need, then save a PDF or send it to Paperless.
       </p>
-      <button class="primary big" onclick={onCamera}><Icon name="retake" /> Start scanning</button>
+      <button class="primary big" onclick={onCamera}>
+        <Icon name="retake" /> Start scanning
+      </button>
     </div>
   {:else}
-    <div class="filters">
-      <span>{selecting ? 'Selected' : 'All pages'}</span>
-      <div class="chips">
+    <div class="head column" class:hairline={scrolledTop}>
+      <input
+        class="title-input"
+        value={session.title}
+        {placeholder}
+        oninput={(e) => session.setTitle(e.currentTarget.value)}
+        aria-label="Document title"
+        enterkeyhint="done"
+        disabled={selecting}
+      />
+      <!-- Always one line high: a suggestion appearing never moves the pages. -->
+      <div class="subtitle">
+        <span class="pages">{plural(session.pages.length)}</span>
+        {#if suggestion && !selecting}
+          <span class="sep" aria-hidden="true">·</span>
+          <button
+            class="suggest"
+            onclick={() => suggestion && useSuggestion(suggestion)}
+            aria-label="Use “{suggestion}” as the title, from page 1"
+          >
+            <span class="suggest-label">Use</span>
+            <span class="suggest-text">“{suggestion}”</span>
+          </button>
+          <button
+            class="dismiss"
+            onclick={() => (dismissed = suggestion)}
+            aria-label="Dismiss the suggested title"
+          >
+            <Icon name="close" size={16} />
+          </button>
+        {/if}
+      </div>
+      <div
+        class="filters chips"
+        role="group"
+        aria-label={selecting ? 'Filter for the selected pages' : 'Filter for all pages'}
+      >
         {#each FILTERS as f (f.id)}
           <button
             class="chip"
             class:active={commonFilter === f.id && filterPages.length > 0}
+            aria-pressed={commonFilter === f.id && filterPages.length > 0}
             disabled={filterPages.length === 0}
             onclick={() => applyToAll(f.id, f.label)}
+            title={f.hint}
           >
             {f.label}
           </button>
@@ -784,7 +820,7 @@
       </div>
     </div>
 
-    <div class="grid" class:selecting bind:this={grid}>
+    <div class="grid column" class:selecting bind:this={grid} onscroll={measureScroll}>
       {#each session.pages as page, i (page.id)}
         {@const prep = tileState(page)}
         {@const picked = selecting && selected.has(page.id)}
@@ -797,7 +833,7 @@
           style:transform={dragId === page.id
             ? `translate(${dragOffset.x}px, ${dragOffset.y}px) scale(1.05)`
             : undefined}
-          animate:flip={{ duration: dragId === page.id ? 0 : 180 }}
+          animate:flip={{ duration: dragId === page.id ? 0 : 200 }}
           onclick={() => tap(page.id)}
           onpointerdown={(e) => pointerDown(e, page.id)}
           onpointermove={pointerMove}
@@ -813,143 +849,124 @@
             <PageCanvas {page} longEdge={520} channel="thumb-{page.id}" class="thumb" />
             {#if selecting}
               <span class="check" class:on={picked} aria-hidden="true">
-                {#if picked}<Icon name="check" />{/if}
-              </span>
-            {:else}
-              <span
-                class="ring"
-                class:done={prep.progress >= 1}
-                class:busy={prep.busy}
-                title="Export: {prep.label}"
-                aria-hidden="true"
-              >
-                <svg viewBox="0 0 20 20">
-                  <circle class="track" cx="10" cy="10" r="8" />
-                  <circle
-                    class="arc"
-                    cx="10"
-                    cy="10"
-                    r="8"
-                    stroke-dasharray="{prep.progress * RING} {RING}"
-                  />
-                  {#if prep.progress >= 1}<path class="tick" d="M6.5 10.2l2.3 2.3 4.7-4.9" />{/if}
-                </svg>
+                {#if picked}<Icon name="check" size={16} />{/if}
               </span>
             {/if}
           </div>
+          <!-- Export readiness: a hairline that fills, then fades once ready. -->
+          <span
+            class="prep"
+            class:done={prep.progress >= 1 || selecting}
+            class:busy={prep.busy}
+            style:--progress={prep.progress}
+            aria-hidden="true"
+          ></span>
           <span class="number">
             {i + 1}
-            {#if isBlurred(page)}<span class="blurred">· blurred</span>{/if}
+            {#if isBlurred(page)}<span class="blurred">Blurred</span>{/if}
           </span>
         </button>
       {/each}
       {#if !selecting}
         <button class="tile add" onclick={onCamera} aria-label="Add pages">
-          <div class="frame"><Icon name="plus" /></div>
+          <div class="frame"><Icon name="plus" size={28} /></div>
+          <span class="prep done" aria-hidden="true"></span>
           <span class="number">Add</span>
         </button>
       {/if}
+      {#if selecting}
+        <p class="hint">Tap pages to select them.</p>
+      {:else if session.pages.length > 1}
+        <p class="hint">Press and hold a page to move it.</p>
+      {/if}
     </div>
-    {#if selecting}
-      <p class="hint">Tap pages to select them.</p>
-    {:else if session.pages.length > 1}
-      <p class="hint">Press and hold a page to move it.</p>
-    {/if}
   {/if}
 
   {#if selecting}
-    <div class="bottombar tools" role="toolbar" aria-label="Selected pages">
-      <button class="icon" onclick={rotateSelected} disabled={!selection.length}>
+    <div
+      class="bottombar tools column"
+      class:hairline={moreBelow}
+      role="toolbar"
+      aria-label="Selected pages"
+      use:dock
+    >
+      <button class="icon ghost" onclick={rotateSelected} disabled={!selection.length}>
         <Icon name="rotate" /><span>Rotate</span>
       </button>
-      <button class="icon" onclick={() => moveSelected('start')} disabled={!selection.length}>
-        <Icon name="left" /><span>To start</span>
+      <button class="icon ghost" onclick={() => moveSelected('start')} disabled={!selection.length}>
+        <Icon name="toStart" /><span>To start</span>
       </button>
-      <button class="icon" onclick={() => moveSelected('end')} disabled={!selection.length}>
-        <Icon name="right" /><span>To end</span>
+      <button class="icon ghost" onclick={() => moveSelected('end')} disabled={!selection.length}>
+        <Icon name="toEnd" /><span>To end</span>
       </button>
       <button
-        class="icon"
+        class="icon ghost"
         onclick={openSplit}
         disabled={!selection.length || selection.length === session.pages.length || !!ui.task}
         title="Save the selected pages as a document of their own"
       >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 3h7v8H4z" />
-          <path d="M13 13h7v8h-7z" />
-          <path d="M15 4h5v5" />
-          <path d="M20 4l-6 6" />
-        </svg>
-        <span>Split off</span>
+        <Icon name="split" /><span>Split off</span>
       </button>
-      <button class="icon danger" onclick={deleteSelected} disabled={!selection.length}>
+      <button class="icon ghost danger" onclick={deleteSelected} disabled={!selection.length}>
         <Icon name="trash" /><span>Delete</span>
       </button>
     </div>
-  {:else}
-    <div class="bottombar">
+  {:else if session.pages.length > 0}
+    <div class="bottombar actions column" class:hairline={moreBelow} use:dock>
       <button
-        class="icon"
+        class="icon ghost quiet"
         onclick={discard}
-        disabled={!session.pages.length}
         aria-label="Discard scanned pages"
         title="Discard scanned pages"
       >
         <Icon name="trash" />
       </button>
-      {#if sharing}
-        <!-- Open with another app (the share sheet): the usual way out. -->
-        <button
-          class="icon primary grow export"
-          class:ready={pdfBadge.text === 'ready'}
-          style:--progress={pdfBadge.progress}
-          onclick={() => void save()}
-          disabled={!session.pages.length || !!ui.task}
-          aria-label="Share PDF"
-          aria-describedby={pdfBadge.text ? 'pdf-state' : undefined}
-        >
-          <Icon name="share" />
-          <span class="label"
-            >Share{#if pdfBadge.text}<span class="state" id="pdf-state">{pdfBadge.text}</span
-              >{/if}</span
-          >
-        </button>
-      {/if}
       <button
-        class="icon grow export"
-        class:primary={!sharing}
-        class:ready={pdfBadge.text === 'ready'}
-        style:--progress={pdfBadge.progress}
-        onclick={() => void save(true)}
-        disabled={!session.pages.length || !!ui.task}
-        aria-label="Download PDF"
-        aria-describedby={pdfBadge.text && !sharing ? 'pdf-state' : undefined}
-      >
-        <Icon name="download" />
-        <span class="label download-label"
-          >Download{#if pdfBadge.text && !sharing}<span class="state" id="pdf-state"
-              >{pdfBadge.text}</span
-            >{/if}</span
-        >
-      </button>
-      <button
-        class="icon export"
-        class:ready={uploadBadge.text === 'ready'}
-        style:--progress={uploadBadge.progress}
+        class="icon ghost export"
+        style:--progress={uploadBadge.text === 'ready' ? 0 : uploadBadge.progress}
         onclick={() => void upload()}
-        disabled={!session.pages.length || !!ui.task}
+        disabled={!!ui.task}
         aria-label={uploadBadge.text
-          ? `Send to Paperless (${uploadBadge.text})`
-          : 'Send to Paperless'}
+          ? `Send to Paperless… (${uploadBadge.text})`
+          : 'Send to Paperless…'}
         title="Send to Paperless"
       >
         <Icon name="leaf" />
       </button>
+      <button
+        class="icon export download"
+        class:primary={!sharing}
+        style:--progress={!sharing && pdfBadge.text !== 'ready' ? pdfBadge.progress : 0}
+        onclick={() => void save(true)}
+        disabled={!!ui.task}
+        aria-label="Download PDF"
+        aria-describedby={pdfBadge.text && !sharing ? 'pdf-state' : undefined}
+      >
+        <Icon name="download" />
+        <span class="label">Download</span>
+      </button>
+      {#if sharing}
+        <!-- Open with another app (the share sheet): the usual way out. -->
+        <button
+          class="icon primary export share"
+          style:--progress={pdfBadge.text === 'ready' ? 0 : pdfBadge.progress}
+          onclick={() => void save()}
+          disabled={!!ui.task}
+          aria-label="Share PDF"
+          aria-describedby={pdfBadge.text ? 'pdf-state' : undefined}
+        >
+          <Icon name="share" />
+          <span class="label">Share</span>
+        </button>
+      {/if}
+      {#if pdfBadge.text}
+        <span class="sr-only" id="pdf-state">{pdfBadge.text}</span>
+      {/if}
     </div>
   {/if}
 </section>
 
-<dialog bind:this={splitDialog} aria-labelledby="split-heading" class="split">
+<dialog bind:this={splitDialog} aria-labelledby="split-heading" class="dialog split">
   <form method="dialog" onsubmit={(e) => e.preventDefault()}>
     <div class="body">
       <h2 id="split-heading">Split off {plural(splitIds.length)}</h2>
@@ -962,101 +979,207 @@
         <input bind:value={splitTitle} placeholder={splitPlaceholder} enterkeyhint="done" />
       </label>
     </div>
-    <div class="actions">
-      <button type="button" onclick={() => splitDialog?.close()}>Cancel</button>
-      <button type="button" onclick={() => split(sharing ? 'share' : 'download')}>
-        <Icon name={sharing ? 'share' : 'download'} /> PDF
+    <div class="dialog-actions">
+      <button type="button" class="ghost cancel" onclick={() => splitDialog?.close()}>Cancel</button
+      >
+      <button type="button" class="icon" onclick={() => split(sharing ? 'share' : 'download')}>
+        <Icon name={sharing ? 'share' : 'download'} size={18} /> PDF
       </button>
-      <button type="button" class="primary" onclick={() => split('upload')}>
-        <Icon name="leaf" /> Paperless
+      <button type="button" class="icon primary" onclick={() => split('upload')}>
+        <Icon name="leaf" size={18} /> Paperless
       </button>
     </div>
   </form>
 </dialog>
 
 <style>
+  /* ---------------------------------------------------------- top bar ---- */
+
+  .topbar .count {
+    font-variant-numeric: tabular-nums;
+  }
+
   .history {
     position: relative;
   }
 
   .badge {
     position: absolute;
-    top: 2px;
-    right: 2px;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 999px;
+    top: 6px;
+    right: 4px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--r-full);
     background: var(--accent);
-    color: #fff;
-    font-size: 11px;
+    color: var(--on-accent);
+    box-shadow: 0 0 0 2px var(--bg);
+    font-size: var(--fs-micro);
     font-weight: 700;
-    line-height: 16px;
+    line-height: 18px;
     text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ------------------------------------------------------------- head ---- */
+
+  .head {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: var(--s-2);
+    border-bottom: 1px solid transparent;
+    transition: border-color var(--dur-1) var(--ease);
+  }
+
+  .hairline.head {
+    border-bottom-color: var(--line);
   }
 
   .title-input {
-    flex: 1;
+    width: 100%;
     min-width: 0;
+    margin: 0 0 0 calc(-1 * var(--s-2));
+    padding: 2px var(--s-2);
     font: inherit;
-    font-weight: 600;
-    font-size: 17px;
+    /* 28 px, a little smaller on the narrowest phones so a dated title fits. */
+    font-size: clamp(22px, 7vw, var(--fs-title));
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
     color: var(--text);
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 10px;
-    padding: 8px 10px;
+    border: none;
+    border-radius: var(--r-s);
+    text-overflow: ellipsis;
+    transition: background-color var(--dur-1) var(--ease);
+  }
+
+  /* The default title reads as the title, just a shade quieter. */
+  .title-input::placeholder {
+    color: var(--text-2);
+    opacity: 1;
+  }
+
+  @media (hover: hover) {
+    .title-input:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--fill) 60%, transparent);
+    }
   }
 
   .title-input:focus {
-    background: var(--panel-2);
-    border-color: var(--border);
+    background: var(--fill);
     outline: none;
   }
 
-  .text-button {
-    padding: 8px 10px;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--accent);
+  .title-input:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent-text);
+  }
+
+  .title-input:disabled {
+    opacity: 1;
+    color: var(--text);
+  }
+
+  .subtitle {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    height: 32px;
+    min-width: 0;
+    font-size: var(--fs-caption);
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+
+  .pages {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sep {
+    flex: 0 0 auto;
+    padding: 0 2px;
   }
 
   .suggest {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px 6px 14px;
-    border-bottom: 1px solid var(--border);
-    font-size: 12px;
-    color: var(--muted);
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--s-1);
+    min-width: 0;
+    min-height: 32px;
+    margin: 0 -6px;
+    padding: 0 6px;
+    border-radius: var(--r-s);
+    background: transparent;
+    font-size: var(--fs-caption);
+    font-weight: 500;
+    color: var(--accent-text);
+    animation: fade-in var(--dur-2) var(--ease);
   }
 
-  .suggest > span {
+  @media (hover: hover) {
+    .suggest:hover:not(:disabled) {
+      background: var(--accent-soft);
+    }
+  }
+
+  .suggest-label {
     flex: 0 0 auto;
+    font-weight: 650;
   }
 
-  .suggest-chip {
-    flex: 0 1 auto;
+  .suggest-text {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--accent);
-    font-weight: 600;
   }
 
   .dismiss {
-    margin-left: auto;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-width: 36px;
     min-height: 36px;
-    padding: 6px;
-    color: var(--muted);
+    margin-left: var(--s-1);
+    padding: 0;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--text-2);
   }
 
-  .dismiss :global(svg) {
-    width: 16px;
-    height: 16px;
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
   }
+
+  .filters {
+    margin: var(--s-1) calc(-1 * var(--gutter)) 0;
+    padding: 0 var(--gutter);
+  }
+
+  .filters .chip:first-child {
+    margin-left: -14px;
+  }
+
+  /* Narrow phones: the row scrolls; its far edge fades to say so. */
+  @media (max-width: 374px) {
+    .filters {
+      mask-image: linear-gradient(to left, transparent, #000 var(--s-8));
+    }
+
+    .filters .chip {
+      padding: 0 10px;
+    }
+
+    .filters .chip:first-child {
+      margin-left: -10px;
+    }
+  }
+
+  /* ------------------------------------------------------------ empty ---- */
 
   .empty {
     flex: 1;
@@ -1064,72 +1187,72 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 14px;
-    padding: 32px;
+    gap: var(--s-4);
+    padding-bottom: calc(var(--s-10) + var(--safe-bottom));
     text-align: center;
-    color: var(--muted);
   }
 
-  .empty h2 {
+  /* Three sheets, fanned: a quiet picture of what the app makes. */
+  .sheet-art {
+    position: relative;
+    width: 96px;
+    height: 112px;
+    margin-bottom: var(--s-4);
+  }
+
+  .sheet-art span {
+    position: absolute;
+    inset: 8px 14px;
+    border-radius: var(--r-xs);
+    background: var(--surface);
+    box-shadow: var(--shadow-paper);
+  }
+
+  .sheet-art span:nth-child(1) {
+    transform: rotate(-9deg) translateX(-10px);
+    opacity: 0.6;
+  }
+
+  .sheet-art span:nth-child(2) {
+    transform: rotate(5deg) translateX(8px);
+    opacity: 0.8;
+  }
+
+  .sheet-art span:nth-child(3) {
+    background:
+      linear-gradient(var(--line), var(--line)) 12px 18px / 40% 3px no-repeat,
+      linear-gradient(var(--line), var(--line)) 12px 30px / 60% 2px no-repeat,
+      linear-gradient(var(--line), var(--line)) 12px 38px / 55% 2px no-repeat,
+      linear-gradient(var(--line), var(--line)) 12px 46px / 60% 2px no-repeat,
+      var(--surface);
+  }
+
+  .empty h1 {
     margin: 0;
-    color: var(--text);
-    font-size: 20px;
+    font-size: var(--fs-heading);
+    font-weight: 650;
+    letter-spacing: -0.01em;
   }
 
   .empty p {
-    margin: 0 0 8px;
-    max-width: 36ch;
+    margin: 0 0 var(--s-4);
+    max-width: 34ch;
+    font-size: var(--fs-body);
     line-height: 1.5;
-  }
-
-  .empty-art {
-    width: 88px;
-    height: 88px;
-    border-radius: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--panel-2);
-    color: var(--accent);
-  }
-
-  .empty-art :global(svg) {
-    width: 44px;
-    height: 44px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
+    color: var(--text-2);
   }
 
   .primary.big {
     display: inline-flex;
-    gap: 8px;
+    gap: var(--s-2);
     align-items: center;
-    padding: 14px 22px;
-    font-size: 16px;
+    min-height: 52px;
+    padding: 0 var(--s-6);
+    border-radius: var(--r-full);
+    font-size: var(--fs-large);
   }
 
-  .primary.big :global(svg) {
-    width: 20px;
-    height: 20px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-  }
-
-  .filters {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border);
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  .filters > span {
-    flex: 0 0 auto;
-  }
+  /* ------------------------------------------------------------- grid ---- */
 
   .grid {
     /* Tiles' offsetLeft/offsetTop are measured from here (drag and drop). */
@@ -1137,23 +1260,44 @@
     flex: 1;
     overflow-y: auto;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 16px;
-    padding: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+    column-gap: var(--s-4);
+    row-gap: var(--s-5);
+    padding-top: var(--s-3);
+    padding-bottom: var(--s-6);
     align-content: start;
+  }
+
+  @media (min-width: 390px) {
+    .grid {
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      column-gap: var(--s-5);
+      row-gap: var(--s-6);
+    }
   }
 
   .tile {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    align-items: center;
+    align-items: stretch;
+    min-height: auto;
     padding: 0;
     background: none;
-    border: none;
+    border-radius: var(--r-xs);
     touch-action: pan-y;
     -webkit-touch-callout: none;
     position: relative;
+  }
+
+  @media (hover: hover) {
+    .tile:hover:not(:disabled) {
+      background: none;
+    }
+  }
+
+  .tile:active:not(:disabled) {
+    transform: none;
   }
 
   .tile.dragging {
@@ -1161,112 +1305,70 @@
     transition: none;
   }
 
-  .tile.dragging .frame {
-    box-shadow: 0 12px 30px rgb(0 0 0 / 45%);
-    outline: 2px solid var(--accent);
-  }
-
   .frame {
+    flex: 0 0 auto;
     width: 100%;
-    aspect-ratio: 3 / 4;
+    /* A4's proportions: a portrait page fills it exactly. */
+    aspect-ratio: 210 / 297;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--panel);
-    border-radius: 8px;
-    overflow: hidden;
     position: relative;
   }
 
-  .selecting .tile:not(.picked) .frame :global(.thumb) {
-    opacity: 0.75;
-  }
-
-  .tile.picked .frame {
-    outline: 3px solid var(--accent);
-    outline-offset: -3px;
-  }
-
+  /* Centred in the frame; absolute, so the percentages have a size to refer to. */
   .frame :global(.thumb) {
+    position: absolute;
+    inset: 0;
+    margin: auto;
     max-width: 100%;
     max-height: 100%;
-    box-shadow: 0 2px 10px rgb(0 0 0 / 25%);
+    border-radius: var(--r-xs);
+    box-shadow: var(--shadow-paper);
     pointer-events: none;
+    transition:
+      box-shadow var(--dur-2) var(--ease),
+      opacity var(--dur-2) var(--ease),
+      outline-color var(--dur-1) var(--ease);
+    outline: 2.5px solid transparent;
+    outline-offset: 3px;
   }
 
-  /* Export readiness: an arc that fills as the page is rendered, then read. */
-  .ring {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 22px;
-    height: 22px;
-    padding: 1px;
-    border-radius: 50%;
-    background: rgb(0 0 0 / 55%);
-    pointer-events: none;
-  }
-
-  .ring svg {
-    display: block;
-    width: 100%;
-    height: 100%;
-    transform: rotate(-90deg);
-    fill: none;
-    stroke-width: 2.5;
-  }
-
-  .ring .track {
-    stroke: rgb(255 255 255 / 25%);
-  }
-
-  .ring .arc {
-    stroke: #fff;
-    stroke-linecap: round;
-    transition: stroke-dasharray 0.3s ease;
-  }
-
-  .ring.busy .arc {
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-
-  .ring.done {
-    background: var(--good);
-  }
-
-  .ring.done .track,
-  .ring.done .arc {
-    stroke: transparent;
-  }
-
-  .ring .tick {
-    stroke: #fff;
-    stroke-width: 2.2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    transform: rotate(90deg);
-    transform-origin: 10px 10px;
-  }
-
-  @keyframes pulse {
-    50% {
-      opacity: 0.45;
+  @media (hover: hover) {
+    .tile:hover .frame :global(.thumb) {
+      box-shadow:
+        var(--shadow-paper),
+        0 6px 20px rgb(0 0 0 / 10%);
     }
+  }
+
+  .tile.dragging .frame :global(.thumb) {
+    box-shadow:
+      var(--paper-ring),
+      0 18px 40px rgb(0 0 0 / 30%);
+  }
+
+  .selecting .tile:not(.picked) .frame :global(.thumb) {
+    opacity: 0.6;
+  }
+
+  .tile.picked .frame :global(.thumb) {
+    outline-color: var(--accent);
   }
 
   .check {
     position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 26px;
-    height: 26px;
+    right: 8px;
+    bottom: 8px;
+    width: 24px;
+    height: 24px;
     border-radius: 50%;
-    border: 2px solid #fff;
-    background: rgb(0 0 0 / 35%);
+    border: 1.5px solid rgb(0 0 0 / 30%);
+    background: rgb(255 255 255 / 85%);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #fff;
+    color: var(--on-accent);
   }
 
   .check.on {
@@ -1275,32 +1377,53 @@
   }
 
   .check :global(svg) {
-    width: 16px;
-    height: 16px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 3;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    stroke-width: 2.5;
   }
 
-  .add .frame {
-    border: 2px dashed var(--border);
-    background: transparent;
-    color: var(--muted);
+  /* Readiness: a hairline under the page that fills, then fades away. */
+  .prep {
+    position: relative;
+    height: 2px;
+    margin: 2px 25% 0;
+    border-radius: 1px;
+    background: var(--line);
+    overflow: hidden;
+    transition: opacity var(--dur-3) var(--ease);
   }
 
-  .add :global(svg) {
-    width: 32px;
-    height: 32px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
+  .prep::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform-origin: left;
+    transform: scaleX(var(--progress, 0));
+    background: var(--text-2);
+    transition: transform var(--dur-3) var(--ease);
+  }
+
+  .prep.busy::after {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  .prep.done {
+    opacity: 0;
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.4;
+    }
   }
 
   .number {
-    font-size: 12px;
-    color: var(--muted);
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    font-size: var(--fs-caption);
+    font-weight: 500;
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+    line-height: 18px;
   }
 
   .blurred {
@@ -1308,34 +1431,81 @@
     font-weight: 600;
   }
 
+  .add .frame {
+    border-radius: var(--r-s);
+    border: 1.5px dashed color-mix(in srgb, var(--text-2) 45%, transparent);
+    color: var(--text-2);
+    transition:
+      border-color var(--dur-1) var(--ease),
+      color var(--dur-1) var(--ease);
+  }
+
+  @media (hover: hover) {
+    .add:hover .frame {
+      border-color: var(--accent-text);
+      color: var(--accent-text);
+    }
+  }
+
   .hint {
+    grid-column: 1 / -1;
     margin: 0;
-    padding: 0 16px 8px;
-    font-size: 12px;
-    color: var(--muted);
+    font-size: var(--fs-caption);
+    color: var(--text-2);
     text-align: center;
   }
 
-  /* Share and Download share the room; on the narrowest phones Download is
-     its icon alone (its accessible name stays). */
+  /* ------------------------------------------------------- bottom bar ---- */
+
   .bottombar {
-    gap: 8px;
+    border-top: 1px solid transparent;
+    transition: border-color var(--dur-1) var(--ease);
   }
 
-  .bottombar .grow {
-    min-width: 0;
-    padding-left: 10px;
-    padding-right: 10px;
-    gap: 8px;
+  .bottombar.hairline {
+    border-top-color: var(--line);
   }
 
+  .quiet {
+    color: var(--text-2);
+  }
+
+  .actions .quiet {
+    margin-left: -10px;
+  }
+
+  .actions .download {
+    flex: 2;
+    margin-left: auto;
+  }
+
+  .actions .share {
+    flex: 3;
+  }
+
+  .actions .download,
+  .actions .share {
+    min-height: 48px;
+    min-width: 48px;
+    max-width: 220px;
+  }
+
+  .actions .download:not(.primary) {
+    max-width: 180px;
+  }
+
+  /* On the narrowest phones Download is its icon alone (its accessible name stays). */
   @media (max-width: 374px) {
-    .bottombar .download-label {
+    .actions .download:not(.primary) {
+      flex: 0 0 auto;
+    }
+
+    .actions .download:not(.primary) .label {
       display: none;
     }
   }
 
-  /* The PDF / Paperless buttons fill from below as their export is prepared. */
+  /* An export being prepared: a hairline along the button's bottom edge. */
   .export {
     position: relative;
     overflow: hidden;
@@ -1345,38 +1515,21 @@
   .export::after {
     content: '';
     position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 3px;
-    width: calc(var(--progress, 0) * 100%);
+    left: 12px;
+    right: 12px;
+    bottom: 5px;
+    height: 2px;
+    border-radius: 1px;
+    transform-origin: left;
+    transform: scaleX(var(--progress, 0));
     background: currentColor;
     opacity: 0.45;
-    transition: width 0.3s ease;
-  }
-
-  .export.ready::after {
-    opacity: 0;
-  }
-
-  /* The name, with the readiness in small print under it. */
-  .label {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: flex-start;
-    line-height: 1.15;
-  }
-
-  .state {
-    font-size: 11px;
-    font-weight: 500;
-    opacity: 0.85;
-    font-variant-numeric: tabular-nums;
+    transition: transform var(--dur-3) var(--ease);
   }
 
   .tools {
-    gap: 4px;
-    padding-left: 6px;
-    padding-right: 6px;
+    gap: 0;
+    padding-top: var(--s-2);
   }
 
   .tools .icon {
@@ -1384,68 +1537,34 @@
     flex-direction: column;
     gap: 2px;
     min-width: 0;
-    padding: 6px 2px;
-    font-size: 11px;
-    background: transparent;
-    border-color: transparent;
+    min-height: 52px;
+    padding: 4px 2px;
+    font-size: var(--fs-micro);
+    font-weight: 500;
+    letter-spacing: 0.01em;
   }
 
   .danger {
     color: var(--err);
   }
 
-  dialog.split {
-    width: min(440px, calc(100vw - 24px));
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 18px;
-    background: var(--panel);
-    color: var(--text);
-  }
-
-  dialog.split::backdrop {
-    background: rgb(0 0 0 / 65%);
-    backdrop-filter: blur(4px);
-  }
+  /* ------------------------------------------------------------ split ---- */
 
   .split .body {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 20px;
+    gap: var(--s-4);
+    padding: var(--s-6) var(--s-6) var(--s-4);
   }
 
   .split h2 {
     margin: 0;
-    font-size: 17px;
+    font-size: var(--fs-heading);
+    font-weight: 650;
+    letter-spacing: -0.01em;
   }
 
-  .split .help {
-    margin: 0;
-    font-size: 13px;
-    color: var(--muted);
-    line-height: 1.5;
-  }
-
-  .split .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 14px 20px;
-    border-top: 1px solid var(--border);
-  }
-
-  .split .actions button {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .split .actions :global(svg) {
-    width: 18px;
-    height: 18px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
+  .split .dialog-actions .cancel {
+    margin-right: auto;
   }
 </style>
