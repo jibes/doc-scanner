@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
   import { SvelteSet } from 'svelte/reactivity';
   import { canShareFiles, defaultTitle, exportPdf, pdfFilename, saveFile } from '../lib/export';
@@ -554,7 +555,30 @@
     pointerId: number;
     target: HTMLElement;
   } | null = null;
+  /** Where in the dragged tile the finger holds it, so the tile stays put under it. */
+  let grab = { x: 0, y: 0 };
+  /** A reorder is being laid out; the next move waits for it. */
+  let moving = false;
   let suppressClick = false;
+
+  /**
+   * A tile's place in the grid as laid out, in viewport pixels: from its
+   * offsets, so neither the dragged tile's transform nor the other tiles'
+   * slide animations move it.
+   */
+  function slot(tile: HTMLElement): { x: number; y: number; w: number; h: number } {
+    const g = grid!.getBoundingClientRect();
+    return {
+      x: g.left + tile.offsetLeft - grid!.scrollLeft,
+      y: g.top + tile.offsetTop - grid!.scrollTop,
+      w: tile.offsetWidth,
+      h: tile.offsetHeight,
+    };
+  }
+
+  function tileOf(id: string): HTMLElement | null {
+    return grid?.querySelector<HTMLElement>(`[data-page-id="${CSS.escape(id)}"]`) ?? null;
+  }
 
   function pointerDown(event: PointerEvent, id: string) {
     // While selecting, a tap toggles a page and nothing is dragged.
@@ -568,7 +592,9 @@
       pointerId,
       target,
       timer: setTimeout(() => {
-        if (!press) return;
+        if (!press || !grid) return;
+        const at = slot(press.target);
+        grab = { x: press.x - at.x, y: press.y - at.y };
         dragId = press.id;
         dragOffset = { x: 0, y: 0 };
         suppressClick = true;
@@ -582,28 +608,35 @@
     };
   }
 
-  function pointerMove(event: PointerEvent) {
+  /** Keep the dragged tile exactly where the finger holds it, wherever its slot now is. */
+  function follow(x: number, y: number) {
+    const tile = dragId ? tileOf(dragId) : null;
+    if (!tile) return;
+    const at = slot(tile);
+    dragOffset = { x: x - grab.x - at.x, y: y - grab.y - at.y };
+  }
+
+  async function pointerMove(event: PointerEvent) {
     if (!press) return;
-    const dx = event.clientX - press.x;
-    const dy = event.clientY - press.y;
+    const { clientX: x, clientY: y } = event;
     if (!dragId) {
       // Moving before the long press completes is a scroll, not a drag.
-      if (Math.hypot(dx, dy) > SLOP) cancelPress();
+      if (Math.hypot(x - press.x, y - press.y) > SLOP) cancelPress();
       return;
     }
-    dragOffset = { x: dx, y: dy };
-    const over = tileAt(event.clientX, event.clientY, dragId);
-    if (over !== null) {
-      const from = session.pages.findIndex((p) => p.id === dragId);
-      if (over !== from) {
-        session.moveTo(dragId, over);
-        // The tile jumped to its new slot; keep it under the finger.
-        press.x = event.clientX;
-        press.y = event.clientY;
-        dragOffset = { x: 0, y: 0 };
-        haptic('tick');
-      }
-    }
+    follow(x, y);
+    if (moving) return;
+    const id = dragId;
+    const over = tileAt(x, y, id);
+    const from = session.pages.findIndex((p) => p.id === id);
+    if (over === null || over === from) return;
+    moving = true;
+    session.moveTo(id, over);
+    haptic('tick');
+    // The tile now has a new slot: re-anchor it to the finger there.
+    await tick();
+    moving = false;
+    if (dragId === id) follow(x, y);
   }
 
   function pointerUp() {
@@ -620,18 +653,18 @@
   }
 
   /**
-   * The slot of the page under the finger, other than the one being dragged
-   * (which is always under it). Only the middle of a tile counts, so a finger
-   * near the border between two slots does not swap them back and forth.
+   * The slot of the page under the finger, other than the dragged one. Slots
+   * are taken as laid out, and only their middle counts, so a finger near the
+   * border between two pages does not swap them to and fro.
    */
   function tileAt(x: number, y: number, dragged: string): number | null {
     const tiles = grid?.querySelectorAll<HTMLElement>('[data-page-index]') ?? [];
     for (const tile of tiles) {
       if (tile.dataset.pageId === dragged) continue;
-      const r = tile.getBoundingClientRect();
-      const mx = r.width * 0.2;
-      const my = r.height * 0.2;
-      if (x >= r.left + mx && x <= r.right - mx && y >= r.top + my && y <= r.bottom - my) {
+      const r = slot(tile);
+      const mx = r.w * 0.2;
+      const my = r.h * 0.2;
+      if (x >= r.x + mx && x <= r.x + r.w - mx && y >= r.y + my && y <= r.y + r.h - my) {
         return Number(tile.dataset.pageIndex);
       }
     }
@@ -764,7 +797,7 @@
           style:transform={dragId === page.id
             ? `translate(${dragOffset.x}px, ${dragOffset.y}px) scale(1.05)`
             : undefined}
-          animate:flip={{ duration: 180 }}
+          animate:flip={{ duration: dragId === page.id ? 0 : 180 }}
           onclick={() => tap(page.id)}
           onpointerdown={(e) => pointerDown(e, page.id)}
           onpointermove={pointerMove}
@@ -1099,6 +1132,8 @@
   }
 
   .grid {
+    /* Tiles' offsetLeft/offsetTop are measured from here (drag and drop). */
+    position: relative;
     flex: 1;
     overflow-y: auto;
     display: grid;
