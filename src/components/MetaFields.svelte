@@ -70,7 +70,7 @@
   .meta {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--s-5);
   }
 
   .legacy {
@@ -78,13 +78,14 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    margin: -8px 0 0;
-    font-size: 12.5px;
-    color: var(--muted);
+    margin: calc(-1 * var(--s-2)) 0 0;
+    font-size: var(--fs-caption);
+    color: var(--text-2);
   }
 
   .legacy .chip {
-    padding: 4px 10px;
-    min-height: 30px;
+    min-height: 32px;
+    padding: 0 10px;
+    font-size: var(--fs-caption);
   }
 </style>
