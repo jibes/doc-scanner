@@ -1,9 +1,17 @@
 <script lang="ts">
   import { listCameras, type CameraDevice } from '../lib/camera/camera';
   import { FILTERS } from '../lib/filters';
-  import { isConfigured } from '../lib/paperless';
-  import { normalizeServerUrl, type AppSettings, type Resolution } from '../lib/settings';
+  import { isConfigured, testConnection, type ConnectionReport } from '../lib/paperless';
+  import { ListsState } from '../lib/paperlessLists.svelte';
+  import { defaultSelection, readCachedLists, type UploadSelection } from '../lib/paperlessMeta';
+  import {
+    normalizeServerUrl,
+    type AppSettings,
+    type PaperlessSettings,
+    type Resolution,
+  } from '../lib/settings';
   import { toast } from '../lib/ui.svelte';
+  import MetaFields from './MetaFields.svelte';
 
   interface Props {
     settings: AppSettings;
@@ -12,16 +20,26 @@
 
   let { settings, onSave }: Props = $props();
 
+  const DEFAULT_PAPERLESS: PaperlessSettings = { baseUrl: '', token: '', tagIds: [] };
+
   let dialog = $state<HTMLDialogElement | null>(null);
   let draft = $state<AppSettings | null>(null);
-  let tags = $state('');
+  let defaults = $state<UploadSelection>(defaultSelection(DEFAULT_PAPERLESS));
+  const lists = new ListsState();
+  let report = $state<ConnectionReport | null>(null);
+  let testing = $state(false);
+  /** Bumped on every open, so the pickers start with an empty search. */
+  let opened = $state(0);
   let cameras = $state<CameraDevice[]>([]);
   let urlError = $state<string | null>(null);
 
   export async function open() {
     draft = structuredClone($state.snapshot(settings));
-    tags = draft.paperless.tagIds.join(', ');
+    defaults = defaultSelection(draft.paperless, readCachedLists(draft.paperless));
     urlError = null;
+    report = null;
+    opened++;
+    void reloadLists(false);
     dialog?.showModal();
     // Labels exist only after camera permission was granted once.
     const devices = (await listCameras()).filter((d) => d.label.trim());
@@ -30,6 +48,51 @@
     }
     cameras = devices;
   }
+
+  /** The draft's server and token, or null when the address is not valid. */
+  function draftConfig(): PaperlessSettings | null {
+    if (!draft) return null;
+    const checked = normalizeServerUrl(draft.paperless.baseUrl);
+    if (!checked.ok) return null;
+    return { ...draft.paperless, baseUrl: checked.url, token: draft.paperless.token.trim() };
+  }
+
+  async function reloadLists(force: boolean) {
+    const config = draftConfig();
+    if (!config) return;
+    await lists.load(config, force);
+    // Tag ids from older settings get their names once the lists know them.
+    if (lists.lists && defaults.tagIds.length > 0) {
+      defaults = defaultSelection(
+        { ...config, tags: defaults.tags, tagIds: defaults.tagIds },
+        lists.lists,
+      );
+    }
+  }
+
+  async function test() {
+    if (!draft || testing) return;
+    testing = true;
+    report = null;
+    try {
+      report = await testConnection(draft.paperless);
+    } finally {
+      testing = false;
+    }
+    if (report.ok) void reloadLists(true);
+  }
+
+  function connectionEdited() {
+    urlError = null;
+    report = null;
+  }
+
+  const MARK: Record<ConnectionReport['checks'][number]['status'], string> = {
+    ok: '✓',
+    warn: '!',
+    fail: '✕',
+    skip: '–',
+  };
 
   function save() {
     if (!draft) return;
@@ -44,10 +107,10 @@
       paperless: {
         baseUrl: checked.url,
         token: draft.paperless.token.trim(),
-        tagIds: tags
-          .split(',')
-          .map((t) => Number.parseInt(t.trim(), 10))
-          .filter((n) => Number.isInteger(n) && n > 0),
+        tagIds: defaults.tagIds,
+        tags: defaults.tags,
+        documentType: defaults.documentType,
+        correspondent: defaults.correspondent,
       },
     };
     onSave(next);
@@ -85,7 +148,7 @@
             spellcheck="false"
             aria-invalid={urlError ? 'true' : undefined}
             aria-describedby={urlError ? 'server-url-error' : undefined}
-            oninput={() => (urlError = null)}
+            oninput={connectionEdited}
           />
         </label>
         {#if urlError}
@@ -93,12 +156,67 @@
         {/if}
         <label class="field">
           <span>API token</span>
-          <input type="password" bind:value={draft.paperless.token} autocomplete="off" />
+          <input
+            type="password"
+            bind:value={draft.paperless.token}
+            autocomplete="off"
+            oninput={connectionEdited}
+          />
         </label>
-        <label class="field">
-          <span>Tag IDs for new documents (optional, comma separated)</span>
-          <input type="text" bind:value={tags} placeholder="1, 4" inputmode="numeric" />
-        </label>
+        <div class="row">
+          <button type="button" onclick={() => void test()} disabled={testing}>
+            {testing ? 'Testing…' : 'Test connection'}
+          </button>
+          {#if report}
+            <span class="verdict" class:bad={!report.ok}>
+              {report.ok ? 'Ready to upload' : 'Not ready'}
+            </span>
+          {/if}
+        </div>
+        <div aria-live="polite">
+          {#if report}
+            <ul class="checks" aria-label="Connection test results">
+              {#each report.checks as check (check.id)}
+                <li class={check.status}>
+                  <span class="mark" aria-hidden="true">{MARK[check.status]}</span>
+                  <span class="text">
+                    <span class="what">{check.label}</span>
+                    <span class="sr-only"
+                      >: {check.status === 'ok'
+                        ? 'passed'
+                        : check.status === 'warn'
+                          ? 'warning'
+                          : check.status === 'fail'
+                            ? 'failed'
+                            : 'not checked'}.</span
+                    >
+                    <span class="detail">{check.detail}</span>
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <div class="row spread">
+          <h3>Defaults for new documents</h3>
+          <button
+            type="button"
+            class="ghost small"
+            onclick={() => void reloadLists(true)}
+            disabled={lists.loading || !draftConfig() || !isConfigured(draftConfig()!)}
+          >
+            {lists.loading ? 'Loading…' : 'Reload'}
+          </button>
+        </div>
+        <p class="help">
+          Picked for every upload; you can change them before each one. Tags, types and
+          correspondents come from Paperless and are kept for offline use.
+        </p>
+        {#if lists.note}<p class="help warn" role="status">{lists.note}</p>{/if}
+        {#key opened}
+          <MetaFields lists={lists.lists} bind:selection={defaults} />
+        {/key}
 
         <h2>Scanning</h2>
         <label class="field">
@@ -201,6 +319,117 @@
 
   .help.error {
     color: var(--err);
+  }
+
+  .help.warn {
+    color: var(--warn);
+  }
+
+  h3 {
+    margin: 0;
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .row.spread {
+    justify-content: space-between;
+    margin-top: 4px;
+  }
+
+  .small {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+
+  .verdict {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--good);
+  }
+
+  .verdict.bad {
+    color: var(--err);
+  }
+
+  .checks {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 12px;
+    list-style: none;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  .checks li {
+    display: flex;
+    gap: 10px;
+    font-size: 13px;
+  }
+
+  .mark {
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--muted);
+  }
+
+  .ok .mark {
+    background: var(--good);
+  }
+
+  .warn .mark {
+    background: var(--warn);
+  }
+
+  .fail .mark {
+    background: var(--err);
+  }
+
+  .skip {
+    opacity: 0.65;
+  }
+
+  .text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .what {
+    font-weight: 600;
+  }
+
+  .detail {
+    color: var(--muted);
+    line-height: 1.45;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   code {
