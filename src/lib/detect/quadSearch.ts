@@ -1,4 +1,5 @@
-import { applyHomography, homography, isConvex, quadArea } from '../imaging/quad';
+import { applyHomography, homography, isConvex, plausibleQuad, quadArea } from '../imaging/quad';
+import { intersectLines, robustFit, type Line } from '../imaging/refine';
 import type { Point, Quad, RGBAImage } from '../imaging/image';
 
 /**
@@ -26,6 +27,12 @@ import type { Point, Quad, RGBAImage } from '../imaging/image';
  *    outermost one, while a photo's or a coloured band's edge inside the page
  *    only bounds a smaller quad. When the model's quad is itself fully
  *    supported, a replacement must contain it.
+ * 5. Real sheets are not always straight: pinned to a board they bow and
+ *    sag, pins cover their corners, and a sheet lying on another white one
+ *    has only a faint edge there. When no quad passes, `relaxedSearch` snaps
+ *    the quads that came close onto the edges near each corner and judges
+ *    them with some tolerance across each side, allowing one weak side, but
+ *    only steps with the paper on their inside count.
  */
 
 /** Colour planes (0..1) at the search resolution. */
@@ -287,7 +294,9 @@ const STEP_MIN = 0.05;
 /** Half the distance across which the step is measured, in search pixels. */
 const STEP_SPAN = 2;
 
-function bilinear(ch: Float32Array, w: number, h: number, x: number, y: number): number {
+/** All three planes at (x, y), bilinearly, into `out` from `at`. */
+function sample3(p: Planes, x: number, y: number, out: Float64Array, at: number): void {
+  const { width: w, height: h } = p;
   const fx = Math.min(w - 1.001, Math.max(0, x - 0.5));
   const fy = Math.min(h - 1.001, Math.max(0, y - 0.5));
   const x0 = Math.floor(fx);
@@ -295,39 +304,46 @@ function bilinear(ch: Float32Array, w: number, h: number, x: number, y: number):
   const tx = fx - x0;
   const ty = fy - y0;
   const i = y0 * w + x0;
-  return (
-    ch[i] * (1 - tx) * (1 - ty) +
-    ch[i + 1] * tx * (1 - ty) +
-    ch[i + w] * (1 - tx) * ty +
-    ch[i + w + 1] * tx * ty
-  );
+  const w00 = (1 - tx) * (1 - ty);
+  const w10 = tx * (1 - ty);
+  const w01 = (1 - tx) * ty;
+  const w11 = tx * ty;
+  for (let c = 0; c < 3; c++) {
+    const ch = p.c[c];
+    out[at + c] = ch[i] * w00 + ch[i + 1] * w10 + ch[i + w] * w01 + ch[i + w + 1] * w11;
+  }
 }
 
 /** Scratch output of `stepAt`: the colour step vector (outside minus inside along n). */
 const delta = new Float64Array(3);
+/** Scratch: colours across a side, three per offset. */
+let across = new Float64Array(3 * 64);
 
 /**
  * Whether there is a colour step across direction (nx, ny) at (x, y): the
- * largest step over a few offsets across, so a slightly bent or misplaced
- * edge still counts. Returns -1 outside the frame (unknown), else 0 or 1;
- * the step itself is left in `delta`.
+ * largest step over offsets up to `slack` across, so a slightly bent or
+ * misplaced edge still counts. Returns -1 outside the frame (unknown), else
+ * 0 or 1; the step itself is left in `delta`.
  */
-function stepAt(p: Planes, x: number, y: number, nx: number, ny: number): number {
+function stepAt(p: Planes, x: number, y: number, nx: number, ny: number, slack = 2): number {
   const { width: w, height: h } = p;
-  const reach = STEP_SPAN + 2;
+  const reach = STEP_SPAN + slack;
   delta[0] = delta[1] = delta[2] = 0;
   if (x - reach < 0 || y - reach < 0 || x + reach > w || y + reach > h) return -1;
+  const k = 2 * reach + 1;
+  if (across.length < 3 * k) across = new Float64Array(3 * k);
+  for (let o = 0; o < k; o++) {
+    const s = o - reach;
+    sample3(p, x + nx * s, y + ny * s, across, 3 * o);
+  }
   let best = 0;
-  for (let o = -2; o <= 2; o++) {
-    const d0 =
-      bilinear(p.c[0], w, h, x + nx * (o + STEP_SPAN), y + ny * (o + STEP_SPAN)) -
-      bilinear(p.c[0], w, h, x + nx * (o - STEP_SPAN), y + ny * (o - STEP_SPAN));
-    const d1 =
-      bilinear(p.c[1], w, h, x + nx * (o + STEP_SPAN), y + ny * (o + STEP_SPAN)) -
-      bilinear(p.c[1], w, h, x + nx * (o - STEP_SPAN), y + ny * (o - STEP_SPAN));
-    const d2 =
-      bilinear(p.c[2], w, h, x + nx * (o + STEP_SPAN), y + ny * (o + STEP_SPAN)) -
-      bilinear(p.c[2], w, h, x + nx * (o - STEP_SPAN), y + ny * (o - STEP_SPAN));
+  // Step centred on offset o: from o - STEP_SPAN to o + STEP_SPAN.
+  for (let o = 0; o <= 2 * slack; o++) {
+    const hi = 3 * (o + 2 * STEP_SPAN);
+    const lo = 3 * o;
+    const d0 = across[hi] - across[lo];
+    const d1 = across[hi + 1] - across[lo + 1];
+    const d2 = across[hi + 2] - across[lo + 2];
     const s = d0 * d0 + d1 * d1 + d2 * d2;
     if (s > best) {
       best = s;
@@ -363,6 +379,7 @@ function track(
   n: number,
   nx: number,
   ny: number,
+  slack = 2,
 ): Track {
   const inFrame = new Int32Array(n + 1);
   const on = new Int32Array(n + 1);
@@ -374,7 +391,7 @@ function track(
   const abs = new Float64Array(n + 1);
   for (let k = 0; k < n; k++) {
     const t = t0 + k + 0.5;
-    const s = stepAt(p, x0 + ux * t, y0 + uy * t, nx, ny);
+    const s = stepAt(p, x0 + ux * t, y0 + uy * t, nx, ny, slack);
     inFrame[k + 1] = inFrame[k] + (s >= 0 ? 1 : 0);
     on[k + 1] = on[k] + (s > 0 ? 1 : 0);
     const keep = s > 0 ? 1 : 0;
@@ -497,7 +514,7 @@ function sideOk(s: SideScore): boolean {
 }
 
 /** Scores of a quad's four sides (TL-TR, TR-BR, BR-BL, BL-TL), sampled directly. */
-export function quadSupport(p: Planes, q: Quad): SideScore[] {
+export function quadSupport(p: Planes, q: Quad, slack = 2, stride = 1): SideScore[] {
   const out: SideScore[] = [];
   for (let e = 0; e < 4; e++) {
     const a = q[e];
@@ -505,9 +522,11 @@ export function quadSupport(p: Planes, q: Quad): SideScore[] {
     const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
     const ux = (b[0] - a[0]) / Math.max(1e-9, len);
     const uy = (b[1] - a[1]) / Math.max(1e-9, len);
-    const n = Math.max(1, Math.round(len));
+    const n = Math.max(1, Math.round(len / stride));
     // Any fixed normal will do: only the consistency of the steps matters.
-    out.push(judge(track(p, a[0], a[1], ux, uy, 0, n, -uy, ux), 0, n));
+    const tr = track(p, a[0], a[1], ux * stride, uy * stride, 0, n, -uy, ux, slack);
+    const s = judge(tr, 0, n);
+    out.push({ ...s, length: s.length * stride });
   }
   return out;
 }
@@ -583,8 +602,13 @@ export interface SearchResult {
   quad: Quad;
   /** Whether the page runs off the frame (a corner outside it, or a side on its border). */
   offFrame: boolean;
-  /** Fully supported quads considered, for diagnostics. */
+  /** Supported quads considered, for diagnostics. */
   candidates: number;
+  /**
+   * `strict`: every side an edge along its whole length. `relaxed`: the
+   * sides are edges allowing for bowed paper, and one may be weak.
+   */
+  tier: 'strict' | 'relaxed';
 }
 
 /** Quads whose areas differ by less than this are the same page, edge-wise. */
@@ -594,16 +618,38 @@ const SAME_SIZE = 0.03;
 const MAX_OPPOSITE_ANGLE = (40 * Math.PI) / 180;
 /** Adjacent sides must differ by at least this much. */
 const MIN_ADJACENT_ANGLE = (45 * Math.PI) / 180;
+/** No corner of a page quad is sharper than this. */
+const MIN_CORNER_ANGLE = (35 * Math.PI) / 180;
+
+export interface SearchOptions {
+  /** Only quads containing this one qualify (the model's, when it is itself well supported). */
+  contain?: Quad;
+  /** Hough lines to build quads from. */
+  lines?: number;
+  /**
+   * When no quad passes the strict check, try the relaxed one (see
+   * `relaxedSearch`); its own `contain` applies there.
+   */
+  relaxed?: { contain?: Quad };
+}
+
+/** A quad from four lines that is not strictly supported but might be the page. */
+interface Rough {
+  quad: Quad;
+  area: number;
+  border: number;
+}
 
 /**
  * The largest quad whose four sides are colour edges along their whole
  * length, in the planes' pixel-edge coordinates. Corners may lie outside the
  * frame when a page runs off it. With `contain`, only quads containing that
- * quad (the model's, when it is itself well supported) qualify.
+ * quad qualify. With `relaxed`, falls back to `relaxedSearch` when no quad
+ * passes.
  */
 export function searchQuad(
   p: Planes,
-  { contain, lines: maxLines = 28 }: { contain?: Quad; lines?: number } = {},
+  { contain, lines: maxLines = 28, relaxed }: SearchOptions = {},
 ): SearchResult | null {
   const { width: w, height: h } = p;
   const detected = houghLines(p, maxLines);
@@ -632,7 +678,8 @@ export function searchQuad(
     }
   }
 
-  const found: { quad: Quad; area: number; border: number; strength: number; off: boolean }[] = [];
+  const found: Found[] = [];
+  const rough: Rough[] = [];
   for (let a = 0; a < pairs.length; a++) {
     const [i, j] = pairs[a];
     for (let b = a + 1; b < pairs.length; b++) {
@@ -660,7 +707,7 @@ export function searchQuad(
       if (!isConvex(raw)) continue;
       const area = quadArea(raw);
       if (area < minArea) continue;
-      if (minAngle(raw) < (35 * Math.PI) / 180) continue;
+      if (minAngle(raw) < MIN_CORNER_ANGLE) continue;
       // Sides: on line k from c0 to c1, j from c1 to c2, l from c2 to c3, i from c3 to c0.
       const sides: [number, Point, Point][] = [
         [k, c0, c1],
@@ -669,8 +716,11 @@ export function searchQuad(
         [i, c3, c0],
       ];
       let ok = true;
+      // Whether it is worth a closer look by the relaxed search.
+      let promising = relaxed !== undefined;
       let fullyVisible = 0;
       let onBorder = 0;
+      let strong = 0;
       let strength = 0;
       for (const [li, pa, pb] of sides) {
         const pr = profiles[li];
@@ -681,39 +731,474 @@ export function searchQuad(
         const ta = along(pr.line, pa[0], pa[1]);
         const tb = along(pr.line, pb[0], pb[1]);
         const s = judge(pr.track, ta, tb);
+        if (s.support < ROUGH_SUPPORT || s.visible < MIN_IN_FRAME) promising = false;
         if (!sideOk(s)) {
           ok = false;
-          break;
-        }
+          if (!promising) break;
+        } else strong++;
         if (s.visible > 0.9) fullyVisible++;
         strength += s.strength;
       }
-      if (!ok || fullyVisible < 2 || onBorder > 2) continue;
+      if (onBorder > 2) continue;
       const quad = orderCyclic(corners);
-      if (contain && !contain.every(([x, y]) => inside(quad, x, y, 0.01 * Math.max(w, h)))) {
+      if (!ok || fullyVisible < 2) {
+        // At least two sides straight edges already, the others at least
+        // partly on edges (bowed, or partly hidden).
+        if (promising && onBorder <= 1 && strong + onBorder >= 2) {
+          rough.push({ quad, area, border: onBorder });
+        }
         continue;
       }
+      if (contain && !containsQuad(quad, contain, w, h)) continue;
       found.push({
         quad,
         area,
         border: onBorder,
+        weak: 0,
         strength: strength / (4 - onBorder),
         off: onBorder > 0 || corners.some(([x, y]) => x < -1 || y < -1 || x > w + 1 || y > h + 1),
       });
     }
   }
-  if (!found.length) return null;
-  // A quad with a side on the frame's border only wins when no quad has all
-  // four sides on real edges. Then the largest; but among quads of nearly the
-  // same size (the page edge, or the soft edge of its shadow just outside),
-  // the one with the strongest edges.
-  const border = Math.min(...found.map((f) => f.border));
-  const fair = found.filter((f) => f.border === border);
+  if (found.length) return { ...pick(found), candidates: found.length, tier: 'strict' };
+  if (!relaxed) return null;
+
+  return relaxedSearch(p, rough, relaxed.contain);
+}
+
+interface Found {
+  quad: Quad;
+  area: number;
+  /** Sides on the frame's border. */
+  border: number;
+  /** Sides that are only weakly supported (relaxed search). */
+  weak: number;
+  strength: number;
+  off: boolean;
+}
+
+/**
+ * A quad with a side on the frame's border, or a weak side, only wins when
+ * no quad has all four sides on real edges. Then the largest; but among
+ * quads of nearly the same size (the page edge, or the soft edge of its
+ * shadow just outside), the one with the strongest edges.
+ */
+function pick(found: Found[]): { quad: Quad; offFrame: boolean } {
+  const flaws = (f: Found) => f.border + f.weak;
+  const fewest = Math.min(...found.map(flaws));
+  const fair = found.filter((f) => flaws(f) === fewest);
   const largest = Math.max(...fair.map((f) => f.area));
   const best = fair
     .filter((f) => f.area >= largest * (1 - SAME_SIZE))
     .reduce((a, b) => (b.strength > a.strength ? b : a));
-  return { quad: best.quad, offFrame: best.off, candidates: found.length };
+  return { quad: best.quad, offFrame: best.off };
+}
+
+function containsQuad(outer: Quad, inner: Quad, w: number, h: number): boolean {
+  return inner.every(([x, y]) => inside(outer, x, y, 0.01 * Math.max(w, h)));
+}
+
+/* ------------------------------------------------------------- relaxed ---- */
+
+/** Each real side of a rough quad must have at least this share of its length on an edge. */
+const ROUGH_SUPPORT = 0.4;
+/** Rough quads looked at closely, largest first. */
+const RELAXED_TRIES = 64;
+/** A weak side: partly hidden (a hand, a pin, a white-on-white overlap) but there. */
+const WEAK_SUPPORT = 0.5;
+/** What there is of it must reach both corners... */
+const WEAK_CORNERS = 0.5;
+/**
+ * ... and, like every side in the relaxed search, be one consistent step,
+ * more so than the strict search asks: a line that runs along card edges,
+ * cork and paper by turns has support but not one step.
+ */
+const RELAXED_COHERENCE = 0.75;
+/** Share of a full side with a step that has the paper on its inside. */
+const PAPER_SUPPORT = 0.7;
+
+/**
+ * How far off a straight line a real page's edge may run, in search pixels:
+ * sheets pinned to a wall or lifted off a table bow and sag by about 1 % of
+ * their size.
+ */
+function bowSlack(p: Planes): number {
+  return Math.max(3, Math.min(8, Math.round(0.008 * Math.max(p.width, p.height))));
+}
+
+function sideWeakOk(s: SideScore): boolean {
+  return (
+    s.visible >= MIN_IN_FRAME &&
+    s.length >= MIN_VISIBLE_PX &&
+    s.support >= WEAK_SUPPORT &&
+    s.corners >= WEAK_CORNERS &&
+    s.coherence >= RELAXED_COHERENCE
+  );
+}
+
+/**
+ * Second chance for photos in which no quad's sides are straight edges along
+ * their whole length: real paper bows, pins and fingers cover corners, and a
+ * sheet overlapping a neighbouring white one has only a faint shadow for an
+ * edge. Quads whose sides are each at least partly on an edge (`rough`) are
+ * snapped onto the edges near their corners (`snapCorners`), then judged
+ * again with `bowSlack` tolerance across each side: every side must pass
+ * the full check, except that one may be weak (`sideWeakOk`) or on the
+ * frame's border. The selection is that of the strict search.
+ */
+function relaxedSearch(p: Planes, rough: Rough[], contain?: Quad): SearchResult | null {
+  const { width: w, height: h } = p;
+  const slack = bowSlack(p);
+  const reach = Math.max(4, Math.round(0.015 * Math.max(w, h)));
+  const minArea = 0.1 * w * h;
+  rough.sort((a, b) => a.border - b.border || b.area - a.area);
+  const found: Found[] = [];
+  const seen: Quad[] = [];
+  // The largest quad found so far: the page is the outermost one, so quads
+  // well inside it (a table, a photo on it) are not looked at.
+  let outermost = 0;
+  const tried: Quad[] = [];
+  // Quads this close snap to the same edges.
+  const near = reach / 2;
+  for (const r of rough) {
+    if (tried.length >= RELAXED_TRIES || r.area < outermost * (1 - 4 * SAME_SIZE)) break;
+    if (
+      tried.some((t) =>
+        t.every((c, i) => Math.hypot(c[0] - r.quad[i][0], c[1] - r.quad[i][1]) < near),
+      )
+    ) {
+      continue;
+    }
+    tried.push(r.quad);
+    const snapped = snapCorners(p, r.quad, reach);
+    if (!plausibleQuad(snapped, w, h, 0.1)) continue;
+    // A quick look at every fourth pixel before the closer one.
+    const glance = quadSupport(p, snapped, slack, 4);
+    if (
+      glance.some(
+        (s, e) =>
+          s.support < WEAK_SUPPORT && !onFrameBorder(snapped[e], snapped[(e + 1) % 4], w, h),
+      )
+    ) {
+      continue;
+    }
+    const q = snapCorners(p, snapped, Math.max(2, Math.round(reach / 3)));
+    if (!isConvex(q) || minAngle(q) < MIN_CORNER_ANGLE || quadArea(q) < minArea) continue;
+    if (!plausibleQuad(q, w, h)) continue;
+    if (seen.some((s) => s.every((c, i) => Math.hypot(c[0] - q[i][0], c[1] - q[i][1]) < 1.5))) {
+      continue;
+    }
+    seen.push(q);
+    if (contain && !containsQuad(q, contain, w, h)) continue;
+    const scores = quadSupport(p, q, slack, 2);
+    const depth = paperDepth(q);
+    let border = 0;
+    let weak = 0;
+    let bad = false;
+    let fullyVisible = 0;
+    let strength = 0;
+    for (let e = 0; e < 4; e++) {
+      if (onFrameBorder(q[e], q[(e + 1) % 4], w, h)) {
+        border++;
+        continue;
+      }
+      const s = scores[e];
+      if (s.visible > 0.9) fullyVisible++;
+      strength += s.strength;
+      // The steps must be the paper's: paper on the inside of them.
+      const scan = scanSide(p, q[e], q[(e + 1) % 4], slack, inwardOf(q, e), depth);
+      const paper = scan && scan.samples ? scan.hits.length / scan.samples : 0;
+      if (sideOk(s) && s.coherence >= RELAXED_COHERENCE && paper >= PAPER_SUPPORT) continue;
+      if (sideWeakOk(s) && paper >= WEAK_SUPPORT) weak++;
+      else bad = true;
+    }
+    if (bad || border + weak > 1 || fullyVisible < 2) continue;
+    outermost = Math.max(outermost, quadArea(q));
+    found.push({
+      quad: q,
+      area: quadArea(q),
+      border,
+      weak,
+      strength: strength / (4 - border),
+      off: border > 0 || q.some(([x, y]) => x < -1 || y < -1 || x > w + 1 || y > h + 1),
+    });
+  }
+  if (!found.length) return null;
+  return { ...pick(found), candidates: found.length, tier: 'relaxed' };
+}
+
+/** Which way side `e` of a convex quad has the quad's inside, along its normal (-uy, ux): ±1. */
+function inwardOf(q: Quad, e: number): number {
+  const a = q[e];
+  const b = q[(e + 1) % 4];
+  const cx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4;
+  const cy = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
+  return (b[0] - a[0]) * (cy - a[1]) - (b[1] - a[1]) * (cx - a[0]) > 0 ? 1 : -1;
+}
+
+/** Whether a side lies along one of the frame's borders. */
+function onFrameBorder(a: Point, b: Point, w: number, h: number): boolean {
+  const near = (u: number, v: number) => Math.abs(u - v) <= 1;
+  return (
+    (near(a[0], 0) && near(b[0], 0)) ||
+    (near(a[0], w) && near(b[0], w)) ||
+    (near(a[1], 0) && near(b[1], 0)) ||
+    (near(a[1], h) && near(b[1], h))
+  );
+}
+
+/** A side's edge positions: points where the colour steps across it, with their place along it (0..1). */
+type Hits = { x: number; y: number; w: number; t: number }[];
+
+/** How far the inside of a step may differ from the paper beside it (Euclidean RGB, 0..1). */
+const PAPER_MATCH = 0.15;
+/** Where the paper is sampled, beyond the search band inward, search pixels. */
+const PAPER_DEPTH = 6;
+/** ... or this share of the quad's shorter dimension, whichever is deeper. */
+const PAPER_DEPTH_SHARE = 0.1;
+
+/** How deep inside a quad to look for its paper's colour. */
+function paperDepth(q: Quad): number {
+  const side = (i: number) => Math.hypot(q[(i + 1) % 4][0] - q[i][0], q[(i + 1) % 4][1] - q[i][1]);
+  return PAPER_DEPTH_SHARE * Math.min(side(0), side(1), side(2), side(3));
+}
+
+/**
+ * Where the edge runs near a side from `a` to `b`: at points along it, the
+ * position within `reach` across it of the strongest colour step in the
+ * side's prevailing direction (paper to background), so that texture, a
+ * pin's or a card's edge stepping the other way does not count.
+ *
+ * `inward` (+1 or -1, along the normal (-uy, ux)) says which way the quad's
+ * inside is. Then only steps whose inner side has the colour of the paper
+ * further in count: on a pin board the bottom edge of a card just above the
+ * page is as strong a step as the page's own top edge.
+ */
+export function edgeHits(
+  p: Planes,
+  a: Point,
+  b: Point,
+  reach: number,
+  inward: number = 0,
+  depth = 0,
+): Hits | null {
+  const scan = scanSide(p, a, b, reach, inward, depth);
+  return scan && scan.hits.length >= scan.samples / 4 ? scan.hits : null;
+}
+
+/** `edgeHits`, with the number of samples taken (those in the frame). */
+function scanSide(
+  p: Planes,
+  a: Point,
+  b: Point,
+  reach: number,
+  inward: number,
+  depth = 0,
+): { hits: Hits; samples: number } | null {
+  const { width: w, height: h } = p;
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (len < 8) return null;
+  const ux = (b[0] - a[0]) / len;
+  const uy = (b[1] - a[1]) / len;
+  const nx = -uy;
+  const ny = ux;
+  const span = STEP_SPAN;
+  const R = Math.ceil(reach);
+  const K = 2 * (R + span) + 1;
+  /** Offsets the step can be centred on: -R..R. */
+  const O = 2 * R + 1;
+  const m = Math.max(24, Math.min(96, Math.round(len / 5)));
+  const deep = R + span + Math.max(PAPER_DEPTH, depth);
+  const far = R + span + 1;
+  const ts: number[] = [];
+  // Per sample, the colours across the side and the paper's colour further in.
+  const cols = new Float64Array(m * 3 * K);
+  const refs = new Float64Array(m * 3);
+  const hasRef = new Uint8Array(m);
+  for (let k = 0; k < m; k++) {
+    const t = 0.02 + (0.96 * k) / (m - 1);
+    const x = a[0] + (b[0] - a[0]) * t;
+    const y = a[1] + (b[1] - a[1]) * t;
+    if (
+      x - Math.abs(nx) * far < 0 ||
+      y - Math.abs(ny) * far < 0 ||
+      x + Math.abs(nx) * far > w ||
+      y + Math.abs(ny) * far > h
+    ) {
+      continue;
+    }
+    const at = ts.length;
+    for (let o = 0; o < K; o++) {
+      const s = o - R - span;
+      sample3(p, x + nx * s, y + ny * s, cols, 3 * (at * K + o));
+    }
+    const rx = x + nx * inward * deep;
+    const ry = y + ny * inward * deep;
+    if (inward && rx >= 0 && ry >= 0 && rx <= w && ry <= h) {
+      sample3(p, rx, ry, refs, 3 * at);
+      hasRef[at] = 1;
+    }
+    ts.push(t);
+  }
+  // The paper's colour along the side: each sample's own (paper shades
+  // across a page), unless that is far from the side's median (ink).
+  const median = [0, 0, 0];
+  const withRef: number[] = [];
+  for (let k = 0; k < ts.length; k++) if (hasRef[k]) withRef.push(k);
+  for (let c = 0; c < 3; c++) {
+    const v = withRef.map((k) => refs[3 * k + c]).sort((x, y) => x - y);
+    median[c] = v.length ? v[Math.floor(v.length / 2)] : 0;
+  }
+  const steps = new Float64Array(ts.length * O * 3);
+  const paper = new Uint8Array(ts.length * O);
+  for (let k = 0; k < ts.length; k++) {
+    let r0 = median[0];
+    let r1 = median[1];
+    let r2 = median[2];
+    if (
+      hasRef[k] &&
+      Math.hypot(refs[3 * k] - r0, refs[3 * k + 1] - r1, refs[3 * k + 2] - r2) <= PAPER_MATCH
+    ) {
+      r0 = refs[3 * k];
+      r1 = refs[3 * k + 1];
+      r2 = refs[3 * k + 2];
+    }
+    const col = 3 * k * K;
+    for (let o = 0; o < O; o++) {
+      const i = 3 * (k * O + o);
+      for (let c = 0; c < 3; c++) {
+        steps[i + c] = cols[col + 3 * (o + 2 * span) + c] - cols[col + 3 * o + c];
+      }
+      if (!inward || !withRef.length) {
+        paper[k * O + o] = 1;
+        continue;
+      }
+      // The step's inner end: offset o + inward * span.
+      const j = col + 3 * (o + span + inward * span);
+      const d = Math.hypot(cols[j] - r0, cols[j + 1] - r1, cols[j + 2] - r2);
+      paper[k * O + o] = d <= PAPER_MATCH ? 1 : 0;
+    }
+  }
+  const n = ts.length;
+  if (n < m / 4) return null;
+  // The prevailing step: sum of each sample's strongest.
+  let d0 = 0;
+  let d1 = 0;
+  let d2 = 0;
+  for (let k = 0; k < n; k++) {
+    let best = STEP_MIN * STEP_MIN;
+    let bi = -1;
+    for (let o = 0, i = k * O * 3; o < O; o++, i += 3) {
+      if (!paper[k * O + o]) continue;
+      const v = steps[i] * steps[i] + steps[i + 1] * steps[i + 1] + steps[i + 2] * steps[i + 2];
+      if (v > best) {
+        best = v;
+        bi = i;
+      }
+    }
+    if (bi < 0) continue;
+    d0 += steps[bi];
+    d1 += steps[bi + 1];
+    d2 += steps[bi + 2];
+  }
+  const norm = Math.hypot(d0, d1, d2);
+  if (norm <= 1e-9) return null;
+  d0 /= norm;
+  d1 /= norm;
+  d2 /= norm;
+  const proj = (k: number, o: number) => {
+    const i = (k * O + o) * 3;
+    return steps[i] * d0 + steps[i + 1] * d1 + steps[i + 2] * d2;
+  };
+  const hits: Hits = [];
+  for (let k = 0; k < n; k++) {
+    let best = -Infinity;
+    let bo = -1;
+    for (let o = 0; o < O; o++) {
+      if (!paper[k * O + o]) continue;
+      const v = proj(k, o);
+      if (v > best) {
+        best = v;
+        bo = o;
+      }
+    }
+    if (bo < 0 || best < STEP_MIN) continue;
+    let off = 0;
+    if (bo > 0 && bo < O - 1) {
+      const l = proj(k, bo - 1);
+      const r = proj(k, bo + 1);
+      const den = l - 2 * best + r;
+      if (den < 0) off = Math.max(-0.5, Math.min(0.5, (0.5 * (l - r)) / den));
+    }
+    const s = bo - R + off;
+    const t = ts[k];
+    hits.push({
+      x: a[0] + (b[0] - a[0]) * t + nx * s,
+      y: a[1] + (b[1] - a[1]) * t + ny * s,
+      // Capped, so that a few strong steps (text, a pin) cannot outweigh
+      // the faint edge of white paper on white.
+      w: Math.min(best, 2 * STEP_MIN),
+      t,
+    });
+  }
+  return { hits, samples: n };
+}
+
+/** Fewest edge points for a line fit to half a side. */
+const MIN_HALF_HITS = 8;
+
+/**
+ * Move a quad's corners onto the edges near them: each corner where lines
+ * fitted to the halves of its two sides nearest to it cross (the whole side
+ * where a half has too little edge), so a bowed or sagging side still ends
+ * at the page's real corners. Sides on the frame's border stay.
+ */
+export function snapCorners(p: Planes, q: Quad, reach: number): Quad {
+  const { width: w, height: h } = p;
+  const through = (a: Point, b: Point): Line => {
+    const len = Math.max(1e-9, Math.hypot(b[0] - a[0], b[1] - a[1]));
+    return {
+      px: a[0],
+      py: a[1],
+      dx: (b[0] - a[0]) / len,
+      dy: (b[1] - a[1]) / len,
+    };
+  };
+  const whole: Line[] = [];
+  const ends: [Line | null, Line | null][] = [];
+  for (let e = 0; e < 4; e++) {
+    const a = q[e];
+    const b = q[(e + 1) % 4];
+    const hits = onFrameBorder(a, b, w, h)
+      ? null
+      : edgeHits(p, a, b, reach, inwardOf(q, e), paperDepth(q));
+    if (!hits) {
+      whole.push(through(a, b));
+      ends.push([null, null]);
+      continue;
+    }
+    whole.push(robustFit(hits, 2 * MIN_HALF_HITS) ?? through(a, b));
+    ends.push([
+      robustFit(
+        hits.filter((x) => x.t < 0.5),
+        MIN_HALF_HITS,
+      ),
+      robustFit(
+        hits.filter((x) => x.t >= 0.5),
+        MIN_HALF_HITS,
+      ),
+    ]);
+  }
+  const out: Point[] = [];
+  for (let c = 0; c < 4; c++) {
+    const before = ends[(c + 3) % 4][1] ?? whole[(c + 3) % 4];
+    const after = ends[c][0] ?? whole[c];
+    const x = intersectLines(before, after);
+    const o = q[c];
+    out.push(x && Math.hypot(x[0] - o[0], x[1] - o[1]) <= 2.5 * reach ? x : o);
+  }
+  const result: Quad = [out[0], out[1], out[2], out[3]];
+  return isConvex(result) ? result : q;
 }
 
 /** Where a line crosses the frame's centre row or column (whichever it is closer to parallel to). */

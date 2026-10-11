@@ -1163,6 +1163,136 @@ function colouredText(): DocSpec {
 
 /* ------------------------------------------------------------- registry ---- */
 
+/**
+ * A notice as pinned up at a bus stop or tourist office: two small logos,
+ * dense text, a big blue rounded-rectangle logo and two ruled price tables
+ * whose many long horizontal rules compete with the page's own edges.
+ */
+function notice(): DocSpec {
+  const b = new Builder();
+  const s = 9.5 * PT;
+  // Small logos in the header.
+  b.draw((g) => {
+    g.strokeStyle = '#2d6db3';
+    g.lineWidth = 0.8;
+    g.beginPath();
+    g.moveTo(20, 24);
+    g.quadraticCurveTo(30, 12, 42, 22);
+    g.quadraticCurveTo(48, 18, 52, 24);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(20, 26);
+    g.lineTo(52, 26);
+    g.stroke();
+    g.fillStyle = '#2d6db3';
+    g.fillRect(156, 22, 30, 2.5);
+  });
+  b.colours.push(
+    { name: 'header-logo', rect: [19, 11, 34, 16] },
+    { name: 'header-bar', rect: [156, 22, 30, 2.5] },
+  );
+  b.text('Seenland', 22, 31, 7 * PT, SANS, { weight: 'bold' });
+  b.text('Mobilität im Seenland', 105, 20, 9 * PT, SANS, { align: 'center' });
+  b.text('Der Seenland Rufbus', 105, 27, 9 * PT, SANS, { align: 'center' });
+  b.text('Kurort am See', 171, 18, 11 * PT, SERIF, { align: 'center', weight: 'bold' });
+  b.text('Der Seenland Rufbus', 20, 46, 12 * PT, SANS, { weight: 'bold', color: '#1d4f91' });
+  b.colours.push({ name: 'heading-blue', rect: [20, 41, 60, 6] });
+  let y = 53;
+  for (const p of [
+    'Der Rufbus ergänzt den Linienverkehr im Seenland. Damit wird eine hohe Flexibilität der Mobilität geboten. Den Startpunkt und das Ziel Ihrer Fahrt bestimmen Sie innerhalb des Betriebsgebietes eigenständig.',
+    'Fahrgäste mit ähnlichem Ziel teilen sich die Fahrt in einem Fahrzeug, somit kann das eigene Auto stehengelassen werden. So werden Abgasemissionen eingespart und die Straßen der Gemeinden entlastet.',
+  ])
+    y = b.para(p, 20, y, 170, s, SANS, 1.35) + 2;
+  b.text('Telefon: +49 8841 555 0190', 30, y + 4, s, SANS);
+  y += 12;
+  b.text('Betriebsgebiet der Gemeinden', 20, y, s, SANS, { weight: 'bold' });
+  for (const [i, town] of [
+    'Uferdorf',
+    'Hochried',
+    'Seebruck',
+    'Moosach',
+    'Kirchberg',
+    'Talheim',
+    'Lindenau',
+    'Weiherfeld',
+  ].entries())
+    b.text(town, 34, y + 5 + i * 4.2, s, SANS);
+  // The big blue logo.
+  const logo = y;
+  b.draw((g) => {
+    g.fillStyle = '#3a78c2';
+    g.beginPath();
+    g.roundRect(105, logo + 2, 75, 30, 4);
+    g.fill();
+  });
+  b.text('RUFBUS', 142.5, y + 21, 18 * PT, SANS, {
+    weight: 'bold',
+    color: '#ffffff',
+    align: 'center',
+    reversed: true,
+    zone: 'colour',
+  });
+  b.colours.push({ name: 'bus-logo', rect: [105, y + 2, 75, 30] });
+  y += 46;
+  // Two ruled price tables.
+  const table = (top: number, head: [string, string, string], rows: string[][]) => {
+    const rh = 4.6;
+    const cols = [20, 75, 130, 185];
+    b.text(head[0], cols[0] + 1, top - 1.5, 8.5 * PT, SANS, { weight: 'bold' });
+    b.text(head[1], cols[1] + 1, top + rh - 1.2, 8.5 * PT, SANS, { weight: 'bold' });
+    b.text(head[2], cols[2] + 1, top + rh - 1.2, 8.5 * PT, SANS, { weight: 'bold' });
+    rows.forEach((r, i) => {
+      const by = top + (i + 2) * rh - 1.2;
+      b.text(r[0], cols[1] - 2, by, 8.5 * PT, SANS, { align: 'right' });
+      b.text(r[1], cols[2] - 2, by, 8.5 * PT, SANS, { align: 'right' });
+      b.text(r[2], cols[3] - 2, by, 8.5 * PT, SANS, { align: 'right' });
+    });
+    const n = rows.length + 1;
+    for (let i = 0; i <= n; i++) b.line(cols[0], top + i * rh, cols[3], top + i * rh, 0.25);
+    for (const x of cols) b.line(x, top, x, top + n * rh, 0.25);
+    return top + n * rh;
+  };
+  const prices = [
+    ['0-5 km', '2,50 €', '1,50 €'],
+    ['5-10 km', '5,00 €', '2,50 €'],
+    ['10-15 km', '7,50 €', '3,50 €'],
+  ];
+  y = table(y, ['Tarife', 'Einzelticket', 'Ermäßigt'], prices);
+  b.text('+ 1,50 € je weiterer angefangener km', 20, y + 4, 8.5 * PT, SANS);
+  y = table(
+    y + 14,
+    ['Gruppen', 'ab 3 Personen', 'Kinder'],
+    [
+      ['0-5 km', '6,00 €', '4,00 €'],
+      ['5-10 km', '12,00 €', '7,00 €'],
+      ['10-15 km', '16,00 €', '10,00 €'],
+    ],
+  );
+  y += 12;
+  y = b.para(
+    'Kinder bis 6 Jahre fahren in Begleitung kostenlos. Fahrgäste mit Deutschlandticket fahren im Rahmen einer Buchung auf allen Strecken kostenlos.',
+    20,
+    y,
+    170,
+    s,
+    SANS,
+  );
+  b.text('Betriebszeiten', 20, y + 6, s, SANS, { weight: 'bold' });
+  b.text('Montag bis Sonntag     07.00 – 20.00 Uhr', 20, y + 11, s, SANS);
+  b.text('Vorausbuchungen sind bis zu 7 Tage vor der Abholung möglich.', 20, y + 22, s, SANS);
+  b.text('Gemeinde Kurort am See, Tourismus und Kultur, Seestraße 1', 105, 280, 7.5 * PT, SANS, {
+    align: 'center',
+  });
+  return b.done({
+    id: 'notice',
+    title: 'Notice: dense text, ruled price tables, big blue logo',
+    widthMm: 210,
+    heightMm: 297,
+    paper: '#fbfbf8',
+    format: 'A4',
+  });
+}
+
 export const DOCUMENTS: Record<string, () => DocSpec> = {
   letter_a4: () => letter('letter_a4', 'Plain typed letter (A4)'),
   invoice: () => invoice(),
@@ -1212,6 +1342,7 @@ export const DOCUMENTS: Record<string, () => DocSpec> = {
   bands,
   photos,
   coloured_text: colouredText,
+  notice,
   faded: () =>
     letter('faded', 'Very low contrast, faded print', { color: '#b9b6ae', paper: '#f4f1e8' }),
 };

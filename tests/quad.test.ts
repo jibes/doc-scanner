@@ -6,6 +6,7 @@ import {
   isConvex,
   orderCorners,
   perspectiveAspect,
+  plausibleQuad,
   quadArea,
   quadPageSize,
 } from '../src/lib/imaging/quad';
@@ -144,5 +145,56 @@ describe('perspectiveAspect', () => {
     const aspect = perspectiveAspect(noisy, 3000, 4000);
     expect(aspect).not.toBeNull();
     expect(Math.abs(aspect! - A4) / A4).toBeLessThan(0.02);
+  });
+});
+
+describe('plausibleQuad', () => {
+  it('accepts photographed rectangles, steep ones included', () => {
+    const head: Quad = [
+      [100, 80],
+      [900, 90],
+      [880, 1250],
+      [120, 1240],
+    ];
+    expect(plausibleQuad(head, 1000, 1333)).toBe(true);
+    const steep: Quad = [
+      [300, 200],
+      [700, 200],
+      [950, 1200],
+      [50, 1200],
+    ];
+    expect(plausibleQuad(steep, 1000, 1333)).toBe(true);
+  });
+
+  it('rejects quads no rectangle photographs as', () => {
+    // The model's quad on a busy pin board: one side a quarter of the other.
+    const lopsided: Quad = [
+      [457, 1302],
+      [2780, 303],
+      [2675, 3809],
+      [399, 2176],
+    ];
+    expect(plausibleQuad(lopsided, 3060, 4080)).toBe(false);
+    const sliver: Quad = [
+      [0, 0],
+      [1000, 0],
+      [1000, 40],
+      [0, 40],
+    ];
+    expect(plausibleQuad(sliver, 1000, 1333)).toBe(false);
+    const bowTie: Quad = [
+      [0, 0],
+      [100, 100],
+      [100, 0],
+      [0, 100],
+    ];
+    expect(plausibleQuad(bowTie, 100, 100)).toBe(false);
+    const kite: Quad = [
+      [500, 0],
+      [1000, 900],
+      [500, 1000],
+      [0, 900],
+    ];
+    expect(plausibleQuad(kite, 1000, 1000)).toBe(false);
   });
 });
