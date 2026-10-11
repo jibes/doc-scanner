@@ -361,6 +361,7 @@
 
   async function addPhoto(
     source: Blob,
+    imported = false,
   ): Promise<{ id: string; found: boolean; blurred: boolean; offFrame: boolean }> {
     let result: {
       quad: Quad | null;
@@ -383,7 +384,7 @@
       };
       bitmap.close();
     }
-    const pageQuad = result.quad ?? fallbackQuad(result.width, result.height);
+    const pageQuad = result.quad ?? fallbackQuad(result.width, result.height, imported);
     const offFrame = result.offFrame;
     const photo = {
       source,
@@ -452,7 +453,7 @@
     let cut = 0;
     try {
       for (const file of files) {
-        const { found, offFrame } = await addPhoto(file);
+        const { found, offFrame } = await addPhoto(file, true);
         if (!found) missing++;
         if (offFrame) cut++;
         if (retakeId) break;

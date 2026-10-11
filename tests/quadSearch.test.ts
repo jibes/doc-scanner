@@ -3,6 +3,9 @@ import {
   clipToFrame,
   colourPlanes,
   edgeHits,
+  frameSearch,
+  printedLine,
+  quadSupport,
   quadSupported,
   searchQuad,
   snapCorners,
@@ -437,5 +440,119 @@ describe('clipToFrame', () => {
     const [u2] = applyHomography(toPage, ...clipped[2]);
     expect(u1).toBeCloseTo(u2, 3);
     expect(u1).toBeGreaterThan(0.8);
+  });
+});
+
+/**
+ * A ruled questionnaire: thin black rules nearly the whole width of the
+ * sheet every 12 units, a row of "words" and four answer marks between them,
+ * a title near the top edge and a closing line near the bottom one.
+ */
+function ruled(u: number, v: number): RGB {
+  const paper: RGB = [236, 234, 228];
+  const ink: RGB = [35, 35, 35];
+  if (v > 30 && v < 280 && u > 4 && u < 206 && (v - 30) % 12 < 0.7) return ink;
+  const inRow = v > 30 && v < 280 && (v - 30) % 12 > 4 && (v - 30) % 12 < 7;
+  if (inRow && u > 14 && u < 150 && Math.floor(u / 9) % 4 !== 3) return ink;
+  if (inRow && u > 160 && u < 200 && u % 10 < 3) return ink;
+  if (v > 8 && v < 13 && u > 60 && u < 150 && Math.floor(u / 7) % 5 !== 4) return ink;
+  if (v > 287 && v < 291 && u > 50 && u < 160 && Math.floor(u / 8) % 6 !== 5) return ink;
+  return paper;
+}
+
+/** Corners of page position (u, v) on a page painted at `quad`. */
+function onPage(quad: Quad, pw: number, ph: number): (u: number, v: number) => Point {
+  const toPhoto = homography(
+    [
+      [0, 0],
+      [pw, 0],
+      [pw, ph],
+      [0, ph],
+    ],
+    quad,
+  );
+  return (u, v) => applyHomography(toPhoto, u, v);
+}
+
+describe('printed lines and pages filling the frame', () => {
+  // A ruled sheet photographed close: it runs off the top and bottom of the
+  // photo, with the table showing left and right of it.
+  const CLOSE: Quad = [
+    [38, -16],
+    [362, -10],
+    [366, 534],
+    [34, 530],
+  ];
+
+  it('tells a printed rule from a page edge', () => {
+    const img = table(400, 520);
+    paintPage(img, CLOSE, 210, 297, ruled);
+    const planes = colourPlanes(img, 1);
+    const at = onPage(CLOSE, 210, 297);
+    // Rows 3 to 18: two rules for top and bottom, the page's edges for sides.
+    const rows: Quad = [at(0, 66), at(210, 66), at(210, 246), at(0, 246)];
+    const sides = quadSupport(planes, rows);
+    expect(printedLine(sides[0])).toBe(true);
+    expect(printedLine(sides[2])).toBe(true);
+    expect(printedLine(sides[1])).toBe(false);
+    expect(printedLine(sides[3])).toBe(false);
+    expect(quadSupported(planes, rows)).toBe(false);
+  });
+
+  it('does not crop a ruled sheet to a strip of its rows', () => {
+    const img = table(400, 520);
+    paintPage(img, CLOSE, 210, 297, ruled);
+    const planes = colourPlanes(img, 1);
+    const result = searchQuad(planes, { relaxed: {} }) ?? frameSearch(planes);
+    expect(result).not.toBeNull();
+    const ys = result!.quad.map((p) => p[1]);
+    // The whole visible sheet: from the top of the photo to its bottom...
+    expect(Math.min(...ys)).toBeLessThan(2);
+    expect(Math.max(...ys)).toBeGreaterThan(518);
+    // ...between the sheet's own left and right edges.
+    const xs = result!.quad.map((p) => p[0]);
+    expect(Math.min(...xs)).toBeGreaterThan(30);
+    expect(Math.max(...xs)).toBeLessThan(370);
+    expect(result!.offFrame).toBe(true);
+  });
+
+  it('takes a flat scan whose page fills the image as the whole image', () => {
+    const img = createRGBA(300, 424);
+    const full: Quad = [
+      [0, 0],
+      [300, 0],
+      [300, 424],
+      [0, 424],
+    ];
+    paintPage(img, full, 210, 297, ruled);
+    const planes = colourPlanes(img, 1);
+    expect(searchQuad(planes, { relaxed: {} })).toBeNull();
+    const result = frameSearch(planes);
+    expect(result).not.toBeNull();
+    expect(result!.tier).toBe('frame');
+    expect(maxError(result!.quad, full)).toBeLessThan(1);
+    expect(result!.offFrame).toBe(false);
+  });
+
+  it('takes the page edge of a scan that shows the scanner lid beyond it', () => {
+    const img = createRGBA(300, 424);
+    img.data.fill(70);
+    const page: Quad = [
+      [0, 0],
+      [300, 0],
+      [300, 400],
+      [0, 400],
+    ];
+    paintPage(img, page, 210, 297, ruled);
+    const result = frameSearch(colourPlanes(img, 1));
+    expect(result).not.toBeNull();
+    expect(maxError(result!.quad, page)).toBeLessThan(2);
+  });
+
+  it('does not take a page on a table for one filling the frame', () => {
+    const img = table(400, 520);
+    paintPage(img, PAGE, 210, 297, ruled);
+    expect(frameSearch(colourPlanes(img, 1))).toBeNull();
+    expect(frameSearch(colourPlanes(table(400, 520), 1))).toBeNull();
   });
 });

@@ -356,9 +356,83 @@ function stepAt(p: Planes, x: number, y: number, nx: number, ny: number, slack =
 }
 
 /**
+ * A page edge is a step: paper on one side, something else on the other,
+ * and it stays different further out. A printed rule (a form's table lines,
+ * an underline) is a thin dark ridge with paper on both sides; across
+ * 2 * STEP_SPAN it is a step too, and the paper either side of it may even
+ * be shaded differently (a fold, the shadow of the phone). A ridge sample:
+ * the darkest point across the path is darker than the paper a few pixels
+ * out on BOTH sides by at least RIDGE_DEPTH, and those two sides are much
+ * closer to each other than to it. A page's own edge with a shadow line
+ * beside it does not qualify: past the thin shadow lies the table, which
+ * differs from the paper as much as from the shadow, or the shadow is wide.
+ */
+const RIDGE_DEPTH = 0.06;
+/** The sides of a ridge differ by at most this share of its shallower depth. */
+const RIDGE_SIDES = 0.5;
+/** Where the sides are sampled, search pixels from the darkest point. */
+const RIDGE_NEAR = 2;
+const RIDGE_FAR = 4;
+/** A side counts as a printed line when at least this share of its steps are ridges. */
+const RIDGE_SHARE = 0.3;
+
+/** Scratch: colours across a path, three per offset. */
+let ridgeCols = new Float64Array(3 * 32);
+const ridgeMid = new Float64Array(6);
+
+/**
+ * Whether the path at (x, y) runs along a thin dark line printed on paper
+ * (see RIDGE_DEPTH): 1 if so, 0 if not, -1 where it cannot be told (too
+ * close to the frame's border).
+ */
+function ridgeAt(p: Planes, x: number, y: number, nx: number, ny: number, slack: number): number {
+  const { width: w, height: h } = p;
+  const core = slack + 1;
+  const reach = core + RIDGE_FAR;
+  if (x - reach * Math.abs(nx) < 0 || y - reach * Math.abs(ny) < 0) return -1;
+  if (x + reach * Math.abs(nx) > w || y + reach * Math.abs(ny) > h) return -1;
+  const k = 2 * reach + 1;
+  if (ridgeCols.length < 3 * k) ridgeCols = new Float64Array(3 * k);
+  for (let o = 0; o < k; o++)
+    sample3(p, x + nx * (o - reach), y + ny * (o - reach), ridgeCols, 3 * o);
+  const lum = (o: number) => ridgeCols[3 * o] + ridgeCols[3 * o + 1] + ridgeCols[3 * o + 2];
+  // The darkest point near the path.
+  let m = reach;
+  for (let o = reach - core; o <= reach + core; o++) if (lum(o) < lum(m)) m = o;
+  const n = RIDGE_FAR - RIDGE_NEAR + 1;
+  const v = new Float64Array(n);
+  for (let side = 0; side < 2; side++) {
+    const sign = side ? 1 : -1;
+    for (let c = 0; c < 3; c++) {
+      for (let j = 0; j < n; j++) v[j] = ridgeCols[3 * (m + sign * (RIDGE_NEAR + j)) + c];
+      v.sort();
+      ridgeMid[3 * side + c] = v[n >> 1];
+    }
+  }
+  const c0 = ridgeCols[3 * m];
+  const c1 = ridgeCols[3 * m + 1];
+  const c2 = ridgeCols[3 * m + 2];
+  const depthA = Math.hypot(ridgeMid[0] - c0, ridgeMid[1] - c1, ridgeMid[2] - c2);
+  const depthB = Math.hypot(ridgeMid[3] - c0, ridgeMid[4] - c1, ridgeMid[5] - c2);
+  // Darker, not just different: the sides are brighter than the line.
+  const brighterA = ridgeMid[0] + ridgeMid[1] + ridgeMid[2] > c0 + c1 + c2;
+  const brighterB = ridgeMid[3] + ridgeMid[4] + ridgeMid[5] > c0 + c1 + c2;
+  const depth = Math.min(depthA, depthB);
+  if (!brighterA || !brighterB || depth < RIDGE_DEPTH) return 0;
+  const sides = Math.hypot(
+    ridgeMid[0] - ridgeMid[3],
+    ridgeMid[1] - ridgeMid[4],
+    ridgeMid[2] - ridgeMid[5],
+  );
+  return sides <= RIDGE_SIDES * depth ? 1 : 0;
+}
+
+/**
  * Edge evidence along a straight path in 1 px steps, as prefix sums so that
  * any stretch of it is an O(1) lookup: samples in the frame, samples with a
- * step, and the summed step vectors (with their summed lengths) of those.
+ * step, and the summed step vectors (with their summed lengths) of those;
+ * of the samples with a step, those that could be told apart from a printed
+ * line (`ridgeIn`), and of those, the ones that are one (`ridgeOn`).
  */
 interface Track {
   /** Path parameter of sample 0. */
@@ -367,6 +441,8 @@ interface Track {
   on: Int32Array;
   d: [Float64Array, Float64Array, Float64Array];
   abs: Float64Array;
+  ridgeIn: Int32Array;
+  ridgeOn: Int32Array;
 }
 
 function track(
@@ -389,16 +465,23 @@ function track(
     new Float64Array(n + 1),
   ];
   const abs = new Float64Array(n + 1);
+  const ridgeIn = new Int32Array(n + 1);
+  const ridgeOn = new Int32Array(n + 1);
   for (let k = 0; k < n; k++) {
     const t = t0 + k + 0.5;
-    const s = stepAt(p, x0 + ux * t, y0 + uy * t, nx, ny, slack);
+    const x = x0 + ux * t;
+    const y = y0 + uy * t;
+    const s = stepAt(p, x, y, nx, ny, slack);
     inFrame[k + 1] = inFrame[k] + (s >= 0 ? 1 : 0);
     on[k + 1] = on[k] + (s > 0 ? 1 : 0);
     const keep = s > 0 ? 1 : 0;
     for (let c = 0; c < 3; c++) d[c][k + 1] = d[c][k] + keep * delta[c];
     abs[k + 1] = abs[k] + keep * Math.hypot(delta[0], delta[1], delta[2]);
+    const r = keep ? ridgeAt(p, x, y, nx, ny, slack) : -1;
+    ridgeIn[k + 1] = ridgeIn[k] + (r >= 0 ? 1 : 0);
+    ridgeOn[k + 1] = ridgeOn[k] + (r > 0 ? 1 : 0);
   }
-  return { t0, inFrame, on, d, abs };
+  return { t0, inFrame, on, d, abs, ridgeIn, ridgeOn };
 }
 
 interface Stretch {
@@ -406,6 +489,8 @@ interface Stretch {
   on: number;
   d: [number, number, number];
   abs: number;
+  ridgeIn: number;
+  ridgeOn: number;
 }
 
 function stretch(tr: Track, ta: number, tb: number): Stretch {
@@ -417,6 +502,8 @@ function stretch(tr: Track, ta: number, tb: number): Stretch {
     on: tr.on[b] - tr.on[a],
     d: [tr.d[0][b] - tr.d[0][a], tr.d[1][b] - tr.d[1][a], tr.d[2][b] - tr.d[2][a]],
     abs: tr.abs[b] - tr.abs[a],
+    ridgeIn: tr.ridgeIn[b] - tr.ridgeIn[a],
+    ridgeOn: tr.ridgeOn[b] - tr.ridgeOn[a],
   };
 }
 
@@ -475,7 +562,16 @@ export interface SideScore {
   length: number;
   /** Mean colour step of the supported samples. */
   strength: number;
+  /**
+   * Share of the supported samples that are a thin dark line with paper on
+   * both sides (see RIDGE_DEPTH): high for a rule printed on the paper. 0
+   * when it cannot be judged (the side hugs the frame's border).
+   */
+  ridge: number;
 }
+
+/** Fewest supported samples on which a side's `ridge` share is judged. */
+const RIDGE_JUDGED = 12;
 
 function judge(tr: Track, ta: number, tb: number): SideScore {
   const len = Math.abs(tb - ta);
@@ -499,7 +595,13 @@ function judge(tr: Track, ta: number, tb: number): SideScore {
     cornerCoherence: Math.min(agree(a), agree(b)),
     length: whole.inFrame,
     strength: whole.on > 0 ? whole.abs / whole.on : 0,
+    ridge: whole.ridgeIn >= RIDGE_JUDGED ? whole.ridgeOn / whole.ridgeIn : 0,
   };
+}
+
+/** A side that is a line printed on the paper rather than the paper's edge. */
+export function printedLine(s: SideScore): boolean {
+  return s.ridge >= RIDGE_SHARE;
 }
 
 function sideOk(s: SideScore): boolean {
@@ -509,7 +611,8 @@ function sideOk(s: SideScore): boolean {
     s.support >= SIDE_SUPPORT &&
     s.corners >= CORNER_SUPPORT &&
     s.coherence >= COHERENCE &&
-    s.cornerCoherence >= CORNER_COHERENCE
+    s.cornerCoherence >= CORNER_COHERENCE &&
+    !printedLine(s)
   );
 }
 
@@ -606,9 +709,11 @@ export interface SearchResult {
   candidates: number;
   /**
    * `strict`: every side an edge along its whole length. `relaxed`: the
-   * sides are edges allowing for bowed paper, and one may be weak.
+   * sides are edges allowing for bowed paper, and one may be weak. `frame`:
+   * the page fills the frame, each side either the paper's edge near the
+   * frame's border or the border itself with paper all along it.
    */
-  tier: 'strict' | 'relaxed';
+  tier: 'strict' | 'relaxed' | 'frame';
 }
 
 /** Quads whose areas differ by less than this are the same page, edge-wise. */
@@ -832,7 +937,8 @@ function sideWeakOk(s: SideScore): boolean {
     s.length >= MIN_VISIBLE_PX &&
     s.support >= WEAK_SUPPORT &&
     s.corners >= WEAK_CORNERS &&
-    s.coherence >= RELAXED_COHERENCE
+    s.coherence >= RELAXED_COHERENCE &&
+    !printedLine(s)
   );
 }
 
@@ -1208,6 +1314,299 @@ function intersectMid(l: HoughLine, w: number, h: number): number {
   // Mostly vertical line (normal near x): x at the centre row.
   if (Math.abs(c) >= Math.abs(s)) return (l.rho - (h / 2) * s) / c;
   return (l.rho - (w / 2) * c) / s;
+}
+
+/* --------------------------------------------------------------- frame ---- */
+
+/**
+ * A page side near a frame border is looked for this far in from it (share
+ * of the frame's size across).
+ */
+const FRAME_REACH = 0.2;
+/** Hough lines looked at for them. */
+const FRAME_LINES = 96;
+/** ... and at most this far off the border's direction. */
+const FRAME_TILT = (12 * Math.PI) / 180;
+/**
+ * Paper along a frame border taken as a side: this share of each, on
+ * average, must look like the page's paper...
+ */
+const FRAME_PAPER = 0.8;
+/** ... and at least this share of every one. */
+const FRAME_PAPER_MIN = 0.65;
+/**
+ * Paper reaching a border: as bright as the page's paper (this share of
+ * it), within PAPER_TINT_LOOSE of its hue (a scan's margin)...
+ */
+const BORDER_BRIGHT = 0.9;
+/**
+ * ... or in shade (down to PAPER_SHADE_LOOSE, and warmer: up to
+ * BORDER_TINT), but then the same as further in, with no colour step this
+ * large between them (a light grey map beside a shaded sheet is not more of
+ * it).
+ */
+const BORDER_STEP = 0.1;
+const BORDER_TINT = 0.25;
+/** A side found near the border: share of it with a step... */
+const FRAME_SIDE_SUPPORT = 0.6;
+/** ... and share of that with the paper inside and something else outside. */
+const FRAME_SIDE_PAPER = 0.6;
+/** Within this share of the frame's size from its border, a side needs only... */
+const FRAME_HUG = 0.03;
+/** ... this share with the paper inside and something else outside. */
+const FRAME_HUG_PAPER = 0.25;
+/** The frame tier's page covers at least this share of the frame. */
+const FRAME_MIN_AREA = 0.5;
+/**
+ * What lies beyond a page side is the paper (another sheet) if it is at
+ * least this bright relative to the page's paper...
+ */
+const PAPER_SHADE = 0.5;
+/**
+ * ... and no more than this different in hue (Euclidean, colours normalised
+ * to their mean; a light map or a grey table is not the paper).
+ */
+const PAPER_TINT = 0.1;
+/** The page's paper reaching the frame's border: hue as in BORDER_BRIGHT. */
+const PAPER_TINT_LOOSE = 0.15;
+/** ... and how deep its shade may be (the far end of a sheet photographed at an angle). */
+const PAPER_SHADE_LOOSE = 0.4;
+
+/**
+ * The page's paper colour: the median of the brighter half of the middle
+ * of the frame (the darker half is print).
+ */
+export function paperColour(p: Planes): [number, number, number] {
+  const { width: w, height: h } = p;
+  const px: [number, number, number, number][] = [];
+  const step = Math.max(1, Math.round(Math.min(w, h) / 120));
+  for (let y = Math.round(h * 0.2); y < h * 0.8; y += step) {
+    for (let x = Math.round(w * 0.2); x < w * 0.8; x += step) {
+      const i = y * w + x;
+      const r = p.c[0][i];
+      const g = p.c[1][i];
+      const b = p.c[2][i];
+      px.push([r + g + b, r, g, b]);
+    }
+  }
+  px.sort((a, b) => a[0] - b[0]);
+  const bright = px.slice(Math.floor(px.length / 2));
+  const out: [number, number, number] = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const v = bright.map((q) => q[c + 1]).sort((a, b) => a - b);
+    out[c] = v.length ? v[v.length >> 1] : 0;
+  }
+  return out;
+}
+
+/** Paper is at least this bright (mean of R, G, B, 0..1)... */
+const PAPER_MIN_LIGHT = 0.45;
+/** ... and at most this far from grey (as PAPER_TINT): white or pastel, not a table. */
+const PAPER_MAX_TINT = 0.35;
+
+/** Whether a colour could be a sheet of paper at all. */
+function plausiblePaper([r, g, b]: readonly [number, number, number]): boolean {
+  const l = (r + g + b) / 3;
+  return l >= PAPER_MIN_LIGHT && Math.hypot(r / l - 1, g / l - 1, b / l - 1) <= PAPER_MAX_TINT;
+}
+
+/** Whether colour (r, g, b) could be the page's paper, `paper`, in shade. */
+export function paperLike(
+  r: number,
+  g: number,
+  b: number,
+  paper: readonly [number, number, number],
+  tint = PAPER_TINT,
+  shade = PAPER_SHADE,
+): boolean {
+  const l = (r + g + b) / 3;
+  const lp = (paper[0] + paper[1] + paper[2]) / 3;
+  if (lp <= 0.05 || l < shade * lp) return false;
+  return Math.hypot(r / l - paper[0] / lp, g / l - paper[1] / lp, b / l - paper[2] / lp) <= tint;
+}
+
+/**
+ * Per-channel median, into `out`, of the colours `a` to `b` search pixels
+ * along (nx, ny) from (x, y), as far as the frame goes; false if that is
+ * less than two pixels.
+ */
+function bandColour(
+  p: Planes,
+  x: number,
+  y: number,
+  nx: number,
+  ny: number,
+  a: number,
+  b: number,
+  out: Float64Array,
+): boolean {
+  const { width: w, height: h } = p;
+  const cols = new Float64Array(3 * (b - a + 1));
+  let n = 0;
+  for (let o = a; o <= b; o++, n++) {
+    const px = x + nx * o;
+    const py = y + ny * o;
+    if (px < 0 || py < 0 || px > w || py > h) break;
+    sample3(p, px, py, cols, 3 * n);
+  }
+  if (n < 2) return false;
+  const v = new Float64Array(n);
+  for (let c = 0; c < 3; c++) {
+    for (let o = 0; o < n; o++) v[o] = cols[3 * o + c];
+    v.sort();
+    out[c] = v[n >> 1];
+  }
+  return true;
+}
+
+/**
+ * A page that fills (nearly) the whole frame, which the strict and relaxed
+ * searches, wanting at least two real sides, cannot find: a flat scan, or a
+ * sheet photographed so close that it runs off two or more sides. Each side
+ * is the outermost line near its frame border that is the paper's edge (a
+ * step with the page's paper inside and something else outside, not a rule
+ * printed on the paper), or else the border itself, provided the paper
+ * reaches it all along. Null when a border is not the page's paper (a page
+ * on a table that nothing found).
+ */
+export function frameSearch(p: Planes): SearchResult | null {
+  const { width: w, height: h } = p;
+  // More lines than the quad search looks at: a form's many rules would
+  // crowd out a faint edge near the border.
+  const profiles = houghLines(p, FRAME_LINES)
+    .filter((l) => {
+      const mid = intersectMid(l, w, h);
+      const horizontal = Math.abs(Math.sin(l.theta)) > Math.abs(Math.cos(l.theta));
+      const across = horizontal ? h : w;
+      return Math.min(Math.abs(mid), Math.abs(across - Math.abs(mid))) <= FRAME_REACH * across;
+    })
+    .map((l) => profile(p, l));
+  const paper = paperColour(p);
+  if (!plausiblePaper(paper)) return null;
+  const frame: HoughLine[] = [
+    { theta: Math.PI / 2, rho: 0, votes: 0 },
+    { theta: 0, rho: w, votes: 0 },
+    { theta: Math.PI / 2, rho: h, votes: 0 },
+    { theta: 0, rho: 0, votes: 0 },
+  ];
+  /** Per border (top, right, bottom, left): the inward normal, and where it lies across. */
+  const inward: Point[] = [
+    [0, 1],
+    [-1, 0],
+    [0, -1],
+    [1, 0],
+  ];
+  const at = [0, w, h, 0];
+  const chosen: (HoughLine | null)[] = [];
+  const paperShare: number[] = [];
+  const inCol = new Float64Array(3);
+  const outCol = new Float64Array(3);
+  const depth = Math.max(4, Math.round(0.008 * Math.max(w, h)));
+  for (let e = 0; e < 4; e++) {
+    const across = e % 2 ? w : h;
+    const [ix, iy] = inward[e];
+    const gap = (pr: Profile) => Math.abs(intersectMid(pr.line, w, h) - at[e]);
+    // Lines near this border, outermost first.
+    const near = profiles
+      .filter(
+        (pr) => angleBetween(pr.line, frame[e]) <= FRAME_TILT && gap(pr) <= FRAME_REACH * across,
+      )
+      .sort((a, b) => gap(a) - gap(b));
+    let side: HoughLine | null = null;
+    for (const pr of near) {
+      // Its extent: between the two neighbouring borders.
+      const a = intersect(pr.line, frame[(e + 3) % 4]);
+      const b = intersect(pr.line, frame[(e + 1) % 4]);
+      if (!a || !b) continue;
+      const s = judge(pr.track, along(pr.line, a[0], a[1]), along(pr.line, b[0], b[1]));
+      if (s.support < FRAME_SIDE_SUPPORT || printedLine(s)) continue;
+      // Paper inside, something else outside.
+      const m = 64;
+      let n = 0;
+      let good = 0;
+      for (let k = 0; k < m; k++) {
+        const x = a[0] + ((b[0] - a[0]) * (k + 0.5)) / m;
+        const y = a[1] + ((b[1] - a[1]) * (k + 0.5)) / m;
+        if (!bandColour(p, x, y, ix, iy, 3, 3 + depth, inCol)) continue;
+        if (!bandColour(p, x, y, -ix, -iy, 2, 2 + depth, outCol)) continue;
+        n++;
+        const apart = Math.hypot(outCol[0] - inCol[0], outCol[1] - inCol[1], outCol[2] - inCol[2]);
+        if (
+          paperLike(inCol[0], inCol[1], inCol[2], paper) &&
+          !paperLike(outCol[0], outCol[1], outCol[2], paper) &&
+          apart > PAPER_MATCH
+        ) {
+          good++;
+        }
+      }
+      // Right at the border, a faint stretch of edge will do: little of
+      // the photo lies beyond it either way.
+      const share = gap(pr) <= FRAME_HUG * across ? FRAME_HUG_PAPER : FRAME_SIDE_PAPER;
+      if (n >= m / 4 && good >= share * n) {
+        side = pr.line;
+        break;
+      }
+    }
+    if (!side) {
+      // The border itself: the paper must reach it all along.
+      const m = 96;
+      const len = e % 2 ? h : w;
+      let n = 0;
+      let good = 0;
+      for (let k = 0; k < m; k++) {
+        const t = ((k + 0.5) / m) * len;
+        const x = e % 2 ? at[e] : t;
+        const y = e % 2 ? t : at[e];
+        if (!bandColour(p, x, y, ix, iy, 1, 1 + depth, outCol)) continue;
+        if (!bandColour(p, x, y, ix, iy, 2 + depth, 2 + 3 * depth, inCol)) continue;
+        n++;
+        // See BORDER_BRIGHT.
+        if (!paperLike(outCol[0], outCol[1], outCol[2], paper, BORDER_TINT, PAPER_SHADE_LOOSE)) {
+          continue;
+        }
+        const bright = paperLike(
+          outCol[0],
+          outCol[1],
+          outCol[2],
+          paper,
+          PAPER_TINT_LOOSE,
+          BORDER_BRIGHT,
+        );
+        const apart = Math.hypot(outCol[0] - inCol[0], outCol[1] - inCol[1], outCol[2] - inCol[2]);
+        if (bright || apart <= BORDER_STEP) good++;
+      }
+      if (!n || good < FRAME_PAPER_MIN * n) return null;
+      paperShare.push(good / n);
+    }
+    chosen.push(side);
+  }
+  // Paper along the borders taken as sides, on the whole; one may have a
+  // little of the table or a neighbouring sheet in a corner.
+  if (
+    paperShare.length &&
+    paperShare.reduce((a, b) => a + b, 0) < FRAME_PAPER * paperShare.length
+  ) {
+    return null;
+  }
+  const lines = chosen.map((l, e) => l ?? frame[e]);
+  const corners: Point[] = [];
+  for (let c = 0; c < 4; c++) {
+    const x = intersect(lines[(c + 3) % 4], lines[c]);
+    if (!x) return null;
+    corners.push(x);
+  }
+  const quad: Quad = [corners[0], corners[1], corners[2], corners[3]];
+  if (!isConvex(quad) || quadArea(quad) < FRAME_MIN_AREA * w * h) return null;
+  const border = chosen.filter((l) => !l).length;
+  return {
+    quad,
+    // A sheet cut off by the photo's border, rather than a scan filling it.
+    offFrame:
+      (border > 0 && border < 4) ||
+      corners.some(([x, y]) => x < -1 || y < -1 || x > w + 1 || y > h + 1),
+    candidates: 1,
+    tier: 'frame',
+  };
 }
 
 /* ------------------------------------------------------------ clipping ---- */

@@ -276,7 +276,7 @@ export async function runCase(id: string, options: CaseOptions): Promise<CaseRes
   const det = detector();
   await timed(timings, 'detectorLoad', () => det.ready);
   const still = await timed(timings, 'detect', () => det.still(photo.blob));
-  const quad = still.quad ?? fallbackQuad(still.width, still.height);
+  const quad = still.quad ?? fallbackQuad(still.width, still.height, kase.imported);
   const { errors, shift } = cornerError(quad, photo.quad);
 
   const page: Page = {

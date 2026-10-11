@@ -48,7 +48,7 @@ export type ProcessorResponse =
 /* ------------------------------------------------------------- detector ---- */
 
 /** Where a still's page quad came from. */
-export type StillSource = 'model' | 'edges' | 'none';
+export type StillSource = 'model' | 'edges' | 'frame' | 'none';
 
 export interface StillResult {
   /** In source pixel-edge coordinates, or null when no page was found. */
@@ -58,7 +58,10 @@ export interface StillResult {
   confidence: number;
   /** See imaging/sharpness.ts; low means blurred. */
   sharpness: number;
-  /** The model's quad (checked against the photo's edges), or the edge search's. */
+  /**
+   * The model's quad (checked against the photo's edges), the edge search's,
+   * or a page filling the frame (a scan; a sheet photographed close up).
+   */
   source: StillSource;
   /**
    * The page runs off the photo: `quad` is the visible part of it (clipped

@@ -1,9 +1,17 @@
 import * as ort from 'onnxruntime-web/wasm';
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import { heatmapsToQuad, type Detection } from '../detect/heatmap';
-import { clipToFrame, colourPlanes, quadSupported, searchQuad } from '../detect/quadSearch';
+import {
+  clipToFrame,
+  colourPlanes,
+  frameSearch,
+  printedLine,
+  quadSupport,
+  quadSupported,
+  searchQuad,
+} from '../detect/quadSearch';
 import { toLuma, type FloatImage, type Quad, type RGBAImage } from '../imaging/image';
-import { plausibleQuad, quadArea, scaleQuad } from '../imaging/quad';
+import { clampQuad, plausibleQuad, quadArea, scaleQuad } from '../imaging/quad';
 import { refineQuad } from '../imaging/refine';
 import { sharpness } from '../imaging/sharpness';
 import { MODEL_INPUT } from '../detect/model';
@@ -84,6 +92,8 @@ const MIN_GROWTH = 1.03;
 const MODEL_TRUST = 0.75;
 /** Confidence reported for a page found by the relaxed edge search alone. */
 const RELAXED_CONFIDENCE = 0.4;
+/** ... and for one taken to fill the frame (a scan, a sheet photographed close up). */
+const FRAME_CONFIDENCE = 0.3;
 
 /**
  * The page in a still, from the model's quad checked against the photo's
@@ -94,9 +104,13 @@ const RELAXED_CONFIDENCE = 0.4;
  * 2. Otherwise the edge search's fully supported quad.
  * 3. Otherwise the relaxed edge search's (bowed paper, a weak side): checked
  *    against the photo, unlike the model's.
- * 4. Otherwise the model's quad if the model is sure of it and it has the
- *    shape of a photographed rectangle.
- * 5. Otherwise nothing: the user places the corners (a guessed quad shown as
+ * 4. Otherwise the model's quad if the model is sure of it, it has the
+ *    shape of a photographed rectangle and none of its sides is a line
+ *    printed on the paper (a form's table rule).
+ * 5. Otherwise a page filling the frame (`frameSearch`): a flat scan, or a
+ *    sheet photographed so close that it runs off the photo, its sides the
+ *    paper's edges near the borders or the borders themselves.
+ * 6. Otherwise nothing: the user places the corners (a guessed quad shown as
  *    found would be worse).
  *
  * Coordinates are those of `rgba` / `luma`.
@@ -124,7 +138,8 @@ function findPage(
     model !== null &&
     detection !== null &&
     detection.confidence >= MODEL_TRUST &&
-    plausibleQuad(model, w, h);
+    plausibleQuad(model, w, h) &&
+    !quadSupport(planes, modelSmall!).some(printedLine);
   const search = searchQuad(planes, {
     contain: modelOk ? modelSmall! : undefined,
     relaxed: modelOk ? undefined : {},
@@ -138,10 +153,23 @@ function findPage(
     return fromModel();
   }
   if (!search && modelSure) return fromModel();
-  if (!search) return null;
+  if (!search) {
+    const frame = frameSearch(planes);
+    if (!frame) return null;
+    // Its sides are the frame's borders or edges right by them: nothing to
+    // refine, and refining a border side would pull it onto the print.
+    const fitted = fitFrame(scaleQuad(frame.quad, 1 / toPlanes), w, h);
+    return {
+      quad: clampQuad(fitted.quad, w, h),
+      confidence: FRAME_CONFIDENCE,
+      source: 'frame',
+      offFrame: fitted.offFrame || frame.offFrame,
+    };
+  }
   const strict = search.tier === 'strict';
+  const found = scaleQuad(search.quad, 1 / toPlanes);
   const fitted = fitFrame(
-    refineQuad(luma, scaleQuad(search.quad, 1 / toPlanes), EDGE_REFINE_REACH, { local: true }),
+    keepBorders(found, refineQuad(luma, found, EDGE_REFINE_REACH, { local: true }), w, h),
     w,
     h,
   );
@@ -154,6 +182,22 @@ function findPage(
     // A side on the frame's border (the page runs off there) or a clipped corner.
     offFrame: fitted.offFrame || (search.offFrame && onBorder(fitted.quad, w, h)),
   };
+}
+
+/**
+ * A side the edge search put on the frame's border (the page runs off
+ * there) stays on it: refinement would pull it onto whatever edge lies
+ * nearby, a rule printed near the page's cut-off end.
+ */
+function keepBorders(found: Quad, refined: Quad, w: number, h: number): Quad {
+  // Frame lines give border coordinates exact to the search grid.
+  const tol = 3;
+  const snap = (v: number, before: number, edge: number) =>
+    Math.abs(before) <= tol ? 0 : Math.abs(before - edge) <= tol ? edge : v;
+  return refined.map(([x, y], i) => [
+    snap(x, found[i][0], w),
+    snap(y, found[i][1], h),
+  ]) as unknown as Quad;
 }
 
 /** Corners this far past the photo's edge (fraction of its long edge) are left as they are. */

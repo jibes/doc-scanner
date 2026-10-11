@@ -1293,6 +1293,82 @@ function notice(): DocSpec {
   });
 }
 
+/**
+ * A ruled rating questionnaire: one item per row, the rows separated by
+ * thin black rules that run nearly the whole width of the sheet, four
+ * answer circles per row, a title close to the top edge and a closing line
+ * close to the bottom one. Ruled forms trip page detection twice over: the
+ * long rules look like page edges (a strip of rows was cropped), and a scan
+ * of one fills the whole image, leaving no page edge to find at all.
+ */
+function questionnaire(): DocSpec {
+  const b = new Builder();
+  const s = 9 * PT;
+  b.text('Weekly Habits Questionnaire', 105, 9, 12 * PT, SANS, {
+    weight: 'bold',
+    align: 'center',
+  });
+  b.text('Mark one circle per statement.', 105, 15, s, SANS, { align: 'center' });
+  const labels = ['never', 'rarely', 'often', 'always'];
+  const cols = [158, 168, 178, 188];
+  labels.forEach((label, i) =>
+    b.text(label, cols[i] + 1.5, 36, 7 * PT, SANS, { rotate: -Math.PI / 2, ocr: false }),
+  );
+  const items = [
+    'I go for a walk before breakfast.',
+    'I read a printed newspaper or magazine.',
+    'I cook dinner from fresh ingredients.',
+    'I forget where I left my keys.',
+    'I water the plants on the balcony.',
+    'I call a friend or relative on the phone.',
+    'I take the stairs instead of the lift.',
+    'I write a shopping list before going out.',
+    'I listen to the radio while working.',
+    'I tidy my desk at the end of the day.',
+    'I ride a bicycle to the station.',
+    'I bake bread or cakes at home.',
+    'I check the weather forecast twice a day.',
+    'I sort the recycling into separate bins.',
+    'I fall asleep before eleven at night.',
+    'I drink a glass of water after waking up.',
+    'I visit the public library in town.',
+    'I repair small things around the house.',
+    'I play a board game with the family.',
+    'I note my expenses in a little book.',
+    'I spend an evening without any screens.',
+    'I learn a few words of a new language.',
+  ];
+  const top = 42;
+  const row = 10.6;
+  b.line(6, top, 204, top, 0.35, '#111');
+  items.forEach((item, i) => {
+    const y = top + i * row;
+    b.text(`${i + 1}.`, 14, y + 6.4, s, SANS);
+    b.text(item, 22, y + 6.4, s, SANS);
+    b.draw((g) => {
+      g.strokeStyle = '#222';
+      g.lineWidth = 0.25;
+      for (const x of cols) {
+        g.beginPath();
+        g.arc(x, y + 5.2, 1.6, 0, Math.PI * 2);
+        g.stroke();
+      }
+    });
+    b.line(6, y + row, 204, y + row, 0.35, '#111');
+  });
+  b.text('Please check that every statement has an answer.', 105, 289, s, SANS, {
+    align: 'center',
+  });
+  return b.done({
+    id: 'questionnaire',
+    title: 'Ruled questionnaire: rules across the page, text near the edges',
+    widthMm: 210,
+    heightMm: 297,
+    paper: '#fcfcfa',
+    format: 'A4',
+  });
+}
+
 export const DOCUMENTS: Record<string, () => DocSpec> = {
   letter_a4: () => letter('letter_a4', 'Plain typed letter (A4)'),
   invoice: () => invoice(),
@@ -1343,6 +1419,7 @@ export const DOCUMENTS: Record<string, () => DocSpec> = {
   photos,
   coloured_text: colouredText,
   notice,
+  questionnaire,
   faded: () =>
     letter('faded', 'Very low contrast, faded print', { color: '#b9b6ae', paper: '#f4f1e8' }),
 };
