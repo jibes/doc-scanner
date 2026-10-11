@@ -153,9 +153,16 @@ export function insetQuad(width: number, height: number, inset = 0.05): Quad {
   ];
 }
 
-/** The crop given to a photo in which no page was found. */
-export function fallbackQuad(width: number, height: number): Quad {
-  return insetQuad(width, height, 0.04);
+/**
+ * The crop given to a photo in which no page was found. An imported image
+ * keeps all of it: it is most likely a scan or a screenshot whose page fills
+ * it (one the detector's frame check missed), and an inset would cut off
+ * whatever is printed near its edges. A camera photo, framed around a page
+ * on a table, starts slightly inset, and the user is sent to place its
+ * corners.
+ */
+export function fallbackQuad(width: number, height: number, imported = false): Quad {
+  return imported ? fullQuad(width, height) : insetQuad(width, height, 0.04);
 }
 
 /**

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { Quad } from '../src/lib/imaging/image';
 import {
   applyHomography,
+  cropShapeUnknown,
+  fallbackQuad,
+  fullQuad,
   homography,
   isConvex,
   orderCorners,
@@ -196,5 +199,22 @@ describe('plausibleQuad', () => {
       [0, 900],
     ];
     expect(plausibleQuad(kite, 1000, 1000)).toBe(false);
+  });
+});
+
+describe('fallbackQuad', () => {
+  it('keeps all of an imported image, whose page likely fills it', () => {
+    expect(fallbackQuad(1240, 1754, true)).toEqual(fullQuad(1240, 1754));
+  });
+
+  it('starts a camera photo slightly inset', () => {
+    const q = fallbackQuad(3000, 4000);
+    expect(q[0]).toEqual([120, 160]);
+    expect(q[2]).toEqual([2880, 3840]);
+  });
+
+  it('says neither crop measures the page', () => {
+    expect(cropShapeUnknown(fallbackQuad(3000, 4000), 3000, 4000)).toBe(true);
+    expect(cropShapeUnknown(fallbackQuad(3000, 4000, true), 3000, 4000)).toBe(true);
   });
 });

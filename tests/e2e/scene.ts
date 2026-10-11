@@ -74,6 +74,8 @@ export interface Case {
   scene: Partial<Scene>;
   /** Whether the capture should be flagged as blurred. */
   expectBlurred?: boolean;
+  /** Imported as a file rather than taken with the camera (its fallback crop differs). */
+  imported?: boolean;
   /** Colour/photo case: OCR every filter's output, not just the PDF's. */
   allFilters?: boolean;
 }
@@ -274,6 +276,39 @@ export const CASES: Case[] = [
       offset: [-0.06, 0.02],
       seed: 5,
     },
+  },
+  // Ruled forms: the rules are long straight dark lines across the paper.
+  {
+    id: 'ruled_table',
+    doc: 'questionnaire',
+    title: 'Ruled questionnaire on a table, nearly filling the frame',
+    scene: { fill: 0.96, pitch: 4, yaw: -3, roll: 1.5, gradient: 0.35, seed: 11 },
+  },
+  {
+    id: 'ruled_close',
+    doc: 'questionnaire',
+    title: 'Ruled questionnaire photographed close: runs off top and bottom',
+    scene: { fill: 1.025, pitch: 0, yaw: 0, roll: 0.8, gradient: 0.35, seed: 12 },
+  },
+  {
+    id: 'scan_150dpi',
+    doc: 'questionnaire',
+    title: 'Flat 150 dpi scan, the page filling the image',
+    // A flatbed scan: no perspective, even light, the page exactly the image.
+    scene: {
+      width: 1240,
+      height: 1754,
+      background: 'white',
+      pitch: 0,
+      yaw: 0,
+      roll: 0,
+      fill: 1,
+      gradient: 0,
+      vignette: 0,
+      noise: 1.5,
+      lens: 0.5,
+    },
+    imported: true,
   },
   {
     id: 'coloured_text',
