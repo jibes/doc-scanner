@@ -224,7 +224,7 @@
   });
 
   /** Offered only while the title is empty: a typed title is never replaced. */
-  const suggestion = $derived(
+  const offered = $derived(
     suggested &&
       suggested.pageId === first?.id &&
       !session.title.trim() &&
@@ -592,7 +592,7 @@
       return;
     }
     dragOffset = { x: dx, y: dy };
-    const over = tileAt(event.clientX, event.clientY);
+    const over = tileAt(event.clientX, event.clientY, dragId);
     if (over !== null) {
       const from = session.pages.findIndex((p) => p.id === dragId);
       if (over !== from) {
@@ -619,11 +619,19 @@
     dragOffset = { x: 0, y: 0 };
   }
 
-  function tileAt(x: number, y: number): number | null {
+  /**
+   * The slot of the page under the finger, other than the one being dragged
+   * (which is always under it). Only the middle of a tile counts, so a finger
+   * near the border between two slots does not swap them back and forth.
+   */
+  function tileAt(x: number, y: number, dragged: string): number | null {
     const tiles = grid?.querySelectorAll<HTMLElement>('[data-page-index]') ?? [];
     for (const tile of tiles) {
+      if (tile.dataset.pageId === dragged) continue;
       const r = tile.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      const mx = r.width * 0.2;
+      const my = r.height * 0.2;
+      if (x >= r.left + mx && x <= r.right - mx && y >= r.top + my && y <= r.bottom - my) {
         return Number(tile.dataset.pageIndex);
       }
     }
@@ -635,6 +643,17 @@
     if (selecting) toggle(id);
     else onOpen(id);
   }
+
+  /*
+   * The suggestion bar sits above the grid. Which page is first changes
+   * while a page is dragged across the first place; showing or hiding the bar
+   * then would shift every tile under the finger, so it waits for the drop.
+   */
+  let suggestion = $state<string | null>(null);
+  $effect(() => {
+    const next = offered;
+    if (!dragId) suggestion = next;
+  });
 
   // While dragging, the page must not scroll under the finger.
   $effect(() => {
@@ -691,7 +710,7 @@
     {#if suggestion}
       <div class="suggest">
         <span>Title from page 1:</span>
-        <button class="chip suggest-chip" onclick={() => useSuggestion(suggestion)}>
+        <button class="chip suggest-chip" onclick={() => suggestion && useSuggestion(suggestion)}>
           Use “{suggestion}”
         </button>
         <button
@@ -741,6 +760,7 @@
           class:dragging={dragId === page.id}
           class:picked
           data-page-index={i}
+          data-page-id={page.id}
           style:transform={dragId === page.id
             ? `translate(${dragOffset.x}px, ${dragOffset.y}px) scale(1.05)`
             : undefined}
