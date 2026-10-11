@@ -337,6 +337,108 @@ describe('thin coloured print in Document', () => {
   });
 });
 
+describe('ballpoint marks on a printed form in Document', () => {
+  // Ballpoint as a scanner sees it: dark, and only faintly blue for its darkness.
+  const pen: RGB = [0.27, 0.25, 0.4];
+  const grey: RGB = [0.45, 0.45, 0.45];
+  /** A cross: two 3 px diagonal strokes, `size` px across, centred on (cx, cy). */
+  const cross = (p: Page, cx: number, cy: number, size: number, rgb: RGB) => {
+    for (let t = -size / 2; t <= size / 2; t++) {
+      p.rect(cx + t - 1, cy + t - 1, cx + t + 2, cy + t + 2, rgb);
+      p.rect(cx + t - 1, cy - t - 1, cx + t + 2, cy - t + 2, rgb);
+    }
+  };
+  /** A 2 px ring of grey print (an answer circle). */
+  const ring = (p: Page, cx: number, cy: number, r: number) => {
+    for (let y = -r; y <= r; y++) {
+      for (let x = -r; x <= r; x++) {
+        const d = Math.hypot(x, y);
+        if (d <= r && d > r - 2) p.rect(cx + x, cy + y, cx + x + 1, cy + y + 1, grey);
+      }
+    }
+  };
+  const src = photograph((p) => {
+    bodyText(p, 150, 6);
+    for (let row = 0; row < 6; row++) {
+      const y = 500 + row * 80;
+      // Answer circles, the table rule under them, and a cross through one
+      // circle that reaches down onto the rule: one blob with the print.
+      for (let k = 0; k < 4; k++) ring(p, 600 + k * 60, y, 12);
+      p.rect(80, y + 22, 900, y + 24, [0.1, 0.1, 0.1]);
+      cross(p, 600 + (row % 4) * 60, y + 6, 34, pen);
+    }
+    // Brownish-black print (as warm light leaves the darkest ink) and grey
+    // print with a faint cool tint: neither is coloured ink.
+    bodyText(p, 1050, 3, [0.11, 0.08, 0.05]);
+    for (let w = 0; w < 5; w++) p.word(120 + w * 150, 1250, 6, [0.55, 0.56, 0.62], 12);
+  });
+  const doc = applyFilter(src, 'document');
+
+  it('keeps a dark blue cross blue, also where it joins a circle and a rule', () => {
+    for (let row = 0; row < 6; row++) {
+      const cx = 600 + (row % 4) * 60;
+      const cy = 500 + row * 80 + 6;
+      // Along both strokes, away from the centre.
+      for (const [x, y] of [
+        [cx - 12, cy - 12],
+        [cx + 12, cy - 12],
+        [cx - 9, cy + 9],
+      ]) {
+        const [r, g, b] = px(doc, x, y);
+        expect(b - r).toBeGreaterThan(30);
+        expect(b - g).toBeGreaterThan(30);
+        expect(luma(doc, x, y)).toBeLessThan(110);
+      }
+    }
+  });
+
+  it('leaves the rule, the circles and the text it touches neutral', () => {
+    const neutral = (x: number, y: number) => {
+      const [r, g, b] = px(doc, x, y);
+      return Math.max(r, g, b) - Math.min(r, g, b);
+    };
+    for (let row = 0; row < 6; row++) {
+      const y = 500 + row * 80;
+      expect(neutral(300, y + 23)).toBeLessThan(4);
+      expect(neutral(880, y + 23)).toBeLessThan(4);
+      // The circle right of the crossed one.
+      const k = (row % 4) + 1;
+      if (k < 4) expect(neutral(600 + k * 60 + 11, y)).toBeLessThan(4);
+    }
+  });
+
+  it('does not colour brownish-black print, faintly tinted grey print or fringes', () => {
+    let coloured = 0;
+    for (let y = 0; y < doc.height; y++) {
+      for (let x = 0; x < doc.width; x++) {
+        if (y > 470 && y < 960 && x > 560 && x < 820) continue; // the crosses
+        const [r, g, b] = px(doc, x, y);
+        if (Math.max(r, g, b) - Math.min(r, g, b) > 12) coloured++;
+      }
+    }
+    expect(coloured).toBe(0);
+  });
+
+  it('does not colour black print with colour fringes from the lens', () => {
+    // Lateral chromatic aberration: red shifted half a pixel one way, blue the other.
+    const img = photograph((p) => bodyText(p, 200, 12));
+    const shifted = createRGBA(img.width, img.height);
+    shifted.data.set(img.data);
+    for (let y = 0; y < img.height; y++) {
+      for (let x = 2; x < img.width - 2; x++) {
+        const p = (y * img.width + x) * 4;
+        shifted.data[p] = (img.data[p] + img.data[p - 4]) / 2;
+        shifted.data[p + 2] = (img.data[p + 2] + img.data[p + 4 + 2]) / 2;
+      }
+    }
+    const out = applyFilter(shifted, 'document');
+    for (let p = 0; p < out.data.length; p += 4) {
+      expect(out.data[p]).toBe(out.data[p + 1]);
+      expect(out.data[p + 1]).toBe(out.data[p + 2]);
+    }
+  });
+});
+
 describe('pushPull', () => {
   it('keeps known values and fills holes smoothly between them', () => {
     const w = 64;

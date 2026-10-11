@@ -1,4 +1,4 @@
-import { applyFilter, isGrayFilter, type FilterId } from '../imaging/filters';
+import { applyFilter, applyFilterForText, isGrayFilter, type FilterId } from '../imaging/filters';
 import type { RGBAImage } from '../imaging/image';
 import { quadPageSize, scaleQuad } from '../imaging/quad';
 import { resize } from '../imaging/resample';
@@ -225,12 +225,31 @@ async function handle(request: ProcessorRequest): Promise<void> {
       return;
     }
     const spec = scaledSpec(request.spec, entry.scale);
-    const result = applyFilter(
-      entry.page,
-      spec.filter,
-      spec.adjustments,
-      filterContext(spec.quad, request.longEdge, entry.decodedSize),
-    );
+    const context = filterContext(spec.quad, request.longEdge, entry.decodedSize);
+    // With text asked for, the filter also hands over the page as the
+    // recogniser should read it (see applyFilterForText).
+    const ocrEdge = request.type === 'encode' ? request.ocrEdge : undefined;
+    let result: RGBAImage;
+    let ocr: { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } | undefined;
+    if (ocrEdge) {
+      const { image, reading } = applyFilterForText(
+        entry.page,
+        spec.filter,
+        spec.adjustments,
+        context,
+      );
+      result = image;
+      // Shrunk right away, so the full-size reading page is not held
+      // through encoding.
+      const scale = Math.min(1, ocrEdge / Math.max(reading.width, reading.height));
+      ocr = resize(
+        reading,
+        Math.max(1, Math.round(reading.width * scale)),
+        Math.max(1, Math.round(reading.height * scale)),
+      );
+    } else {
+      result = applyFilter(entry.page, spec.filter, spec.adjustments, context);
+    }
     // An uncached export page is garbage from here on; don't hold it through
     // encoding.
     entry = null;
@@ -241,16 +260,7 @@ async function handle(request: ProcessorRequest): Promise<void> {
     }
     const image = await encodeForPdf(result, spec.filter, request.jpegQuality);
     const transfer: Transferable[] = [image.bytes.buffer];
-    let ocr: { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } | undefined;
-    if (request.ocrEdge) {
-      const scale = Math.min(1, request.ocrEdge / Math.max(result.width, result.height));
-      ocr = resize(
-        result,
-        Math.max(1, Math.round(result.width * scale)),
-        Math.max(1, Math.round(result.height * scale)),
-      );
-      transfer.push(ocr.data.buffer);
-    }
+    if (ocr) transfer.push(ocr.data.buffer);
     self.postMessage(
       { type: 'encoded', id, image, width: result.width, height: result.height, ocr },
       transfer,
