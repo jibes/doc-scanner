@@ -190,7 +190,19 @@ installed app: swiped away), never under a running one.
 
 - **Camera:** the outline follows the page; hints say when to move closer or
   that it is too dark (with a flash shortcut). Each capture confirms with
-  "Page N added".
+  "Page N added", and **Done · N pages** next to the shutter leads to the
+  document. The lens is chosen under Settings → Camera. A few tips show the
+  first time the camera opens.
+- **Crop:** drag a corner or edge; it moves with the finger from where it
+  was, never jumping to it. Rest the finger for a moment and the corner moves
+  at half speed for the last pixels (the magnifier's ring turns blue); the
+  small shift a finger makes as it lifts off the glass is undone.
+- **Importing:** the gallery button beside the shutter adds photos. On
+  Android, the installed app also appears in the share sheet: share photos
+  from the gallery or another app and they are added as pages.
+- **Installing:** where the browser supports it (Chrome, Edge, Brave on
+  Android and desktop) the document screen offers "Install"; on iOS it shows
+  once how to use Share → Add to Home Screen.
 - **Document:** press and hold a page to drag it to a new position. A filter
   chip above the grid applies to every page.
 - **Page:** swipe left or right (or use the arrow keys) to move between pages.
@@ -260,6 +272,10 @@ src/
     pdf/                        PDF writer, PNG predictors, paper size
     worker/                     detector, OCR (ONNX) and processor workers + clients
     camera/camera.ts            lens selection, torch, full-resolution stills
+    importPhotos.ts             photo → page (camera, file picker and share sheet)
+    dragFilter.ts               crop handle dragging: fine mode, lift jitter
+    shareTarget.ts              photos shared from other apps (with public/share-target.js)
+    onboarding.svelte.ts        install prompt and first-run tips
     store/                      session state, IndexedDB persistence
     paperless.ts export.ts      upload and PDF assembly
     history.ts                  past exports and uploads
@@ -314,6 +330,11 @@ once.
 - **A flat, neutral grey print with a crisp edge** looks exactly like a hard
   shadow, and is flattened white like one. Printed full-page gradients look
   like uneven light and are flattened too.
+- **Sharing into the app needs Android and the installed app.** The share
+  target is declared in the manifest and handled by the service worker
+  (`public/share-target.js`), so it appears only after installing, and only
+  where Web Share Target is supported (Chrome-based browsers on Android, not
+  iOS). PDFs cannot be shared in; images only.
 - **iOS Safari has no ImageCapture**, so stills there come from the video
   stream (up to 4K), not the full sensor.
 - **Threads are off.** GitHub Pages cannot send the cross-origin isolation

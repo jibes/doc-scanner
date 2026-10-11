@@ -55,6 +55,16 @@ export default defineConfig({
         orientation: 'portrait',
         start_url: '.',
         scope: '.',
+        // Android: "Share" photos from the gallery or another app straight
+        // into the document. public/share-target.js receives the POST.
+        share_target: {
+          action: 'share-target',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: { files: [{ name: 'files', accept: ['image/*'] }] },
+        },
+        // Sharing again focuses the open app instead of stacking windows.
+        launch_handler: { client_mode: ['navigate-existing', 'auto'] },
         icons: [
           { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -67,6 +77,8 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Receives photos shared from other apps (relative to the worker).
+        importScripts: ['share-target.js'],
         // The model and the ONNX runtime are what make the app work offline.
         globPatterns: ['**/*.{js,mjs,css,html,svg,png,webmanifest,wasm,onnx}'],
         // The OCR models (~13 MB) are only fetched, then cached, when a PDF is

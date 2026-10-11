@@ -4,6 +4,7 @@
   import CropScreen from './components/CropScreen.svelte';
   import DocumentScreen from './components/DocumentScreen.svelte';
   import HistoryScreen from './components/HistoryScreen.svelte';
+  import Onboarding from './components/Onboarding.svelte';
   import Overlays from './components/Overlays.svelte';
   import PageScreen from './components/PageScreen.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
@@ -11,6 +12,7 @@
   import { dropRenders } from './lib/renderCache';
   import { detector, forgetPage } from './lib/services';
   import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
+  import { clearShareFlag, importShared, sharedFiles } from './lib/shareTarget';
   import { session } from './lib/store/session.svelte';
 
   type Screen =
@@ -27,8 +29,13 @@
   onMount(() => {
     // Start loading the model straight away; it is needed on the first frame.
     detector();
-    void session.restore().then(() => {
-      if (session.pages.length === 0) screen = { name: 'camera', retakeId: null };
+    // Photos shared from another app (Android share sheet) become pages.
+    clearShareFlag();
+    const shared = sharedFiles().catch(() => null);
+    void session.restore().then(async () => {
+      const share = await shared;
+      if (share?.files.length) void importShared(share, settings.defaultFilter);
+      else if (session.pages.length === 0) screen = { name: 'camera', retakeId: null };
     });
   });
 
@@ -118,6 +125,7 @@
   {/if}
 
   <SettingsDialog bind:this={settingsDialog} {settings} onSave={updateSettings} />
+  <Onboarding screen={session.loaded ? screen.name : 'boot'} />
   <Overlays />
 </main>
 
