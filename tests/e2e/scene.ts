@@ -13,7 +13,7 @@ export interface Scene {
   /** Photo size in pixels. */
   width: number;
   height: number;
-  background: 'wood' | 'dark' | 'white' | 'desk';
+  background: 'wood' | 'dark' | 'white' | 'desk' | 'cork';
   /** Camera tilt (deg): pitch about the page's x axis, yaw about y, roll about the view axis. */
   pitch: number;
   yaw: number;
@@ -32,6 +32,14 @@ export interface Scene {
   /** Fold creases and crumple shading. */
   creases?: number;
   crumple?: number;
+  /**
+   * The page pinned to a board among other papers: business cards just
+   * above it, a second white sheet overlapping its right edge (only a faint
+   * step between the two), pushpins on three corners, and the sheet bowing
+   * out (`bow`, share of its width) and sagging between the pins (`sag`,
+   * share of its height).
+   */
+  pinboard?: { bow: number; sag: number };
   /** Sensor noise sigma (8-bit units, before gain). */
   noise: number;
   /** Lens blur sigma, px. */
@@ -239,6 +247,35 @@ export const CASES: Case[] = [
   },
   { id: 'photos', doc: 'photos', title: 'Embedded photos', scene: { pitch: 12 }, allFilters: true },
   {
+    id: 'pinboard',
+    doc: 'notice',
+    title: 'Notice pinned to a cork board: cards, a second sheet, pins, bowed paper',
+    scene: {
+      background: 'cork',
+      pinboard: { bow: 0.014, sag: 0.008 },
+      pitch: 3,
+      yaw: -2,
+      roll: 1,
+      fill: 0.8,
+      offset: [-0.05, 0.01],
+    },
+  },
+  {
+    id: 'pinboard_flat',
+    doc: 'notice',
+    title: 'Notice pinned to a cork board, lying flat',
+    scene: {
+      background: 'cork',
+      pinboard: { bow: 0, sag: 0 },
+      pitch: 6,
+      yaw: 3,
+      roll: -1,
+      fill: 0.78,
+      offset: [-0.06, 0.02],
+      seed: 5,
+    },
+  },
+  {
     id: 'coloured_text',
     doc: 'coloured_text',
     title: 'Coloured text, links, thin coloured rules/chart',
@@ -416,6 +453,26 @@ export async function photograph(doc: DocSpec, overrides: Partial<Scene>): Promi
   }
   const hand = s.hand ? handMask(s) : null;
   const mmPerPx = doc.widthMm / pw;
+  const board = s.pinboard;
+  const cork = s.background === 'cork' ? valueNoise(s.seed + 3, 140) : null;
+  const cork2 = s.background === 'cork' ? valueNoise(s.seed + 4, 37) : null;
+  /** Whether page position (u, v) is on the (possibly bowed) sheet. */
+  const onSheet = (u: number, v: number) => {
+    if (!board) return u >= 0 && v >= 0 && u < pw - 1 && v < ph - 1;
+    const un = u / pw;
+    const vn = v / ph;
+    const bulge = board.bow * Math.sin(Math.PI * Math.min(1, Math.max(0, vn)));
+    const sag = board.sag * Math.sin(Math.PI * Math.min(1, Math.max(0, un)));
+    return un >= -bulge && un < 1 + bulge && vn >= sag && v < ph - 1;
+  };
+  // Pushpins on the top corners and the bottom left one: head radius, colour.
+  const pins: { x: number; y: number; r: number; c: [number, number, number] }[] = board
+    ? [
+        { at: quad[0], c: [236, 236, 230] as [number, number, number] },
+        { at: quad[1], c: [228, 205, 40] as [number, number, number] },
+        { at: quad[3], c: [226, 210, 50] as [number, number, number] },
+      ].map(({ at, c }) => ({ x: at[0] + W * 0.006, y: at[1] + W * 0.004, r: W * 0.014, c }))
+    : [];
 
   const out = new ImageData(W, H);
   const od = out.data;
@@ -434,11 +491,14 @@ export async function photograph(doc: DocSpec, overrides: Partial<Scene>): Promi
       let R: number;
       let G: number;
       let B: number;
-      if (u >= 0 && v >= 0 && u < pw - 1 && v < ph - 1) {
-        const iu = Math.floor(u - 0.5 < 0 ? 0 : u - 0.5);
-        const iv = Math.floor(v - 0.5 < 0 ? 0 : v - 0.5);
-        const fu = Math.min(1, Math.max(0, u - 0.5 - iu));
-        const fv = Math.min(1, Math.max(0, v - 0.5 - iv));
+      if (onSheet(u, v)) {
+        // A bowed sheet shows a sliver past the flat page's edge: its margin.
+        const cu = Math.min(pw - 1.5, Math.max(0.5, u));
+        const cv = Math.min(ph - 1.5, Math.max(0.5, v));
+        const iu = Math.floor(cu - 0.5);
+        const iv = Math.floor(cv - 0.5);
+        const fu = Math.min(1, Math.max(0, cu - 0.5 - iu));
+        const fv = Math.min(1, Math.max(0, cv - 0.5 - iv));
         const p = (iv * pw + iu) * 4;
         const q = p + pw * 4;
         const lerp = (k: number) =>
@@ -467,7 +527,9 @@ export async function photograph(doc: DocSpec, overrides: Partial<Scene>): Promi
         const du = u < 0 ? -u : u > pw ? u - pw : 0;
         const dv = v < 0 ? -v : v > ph ? v - ph : 0;
         const dist = Math.hypot(du, dv) * mmPerPx;
-        light *= 1 - 0.3 * Math.exp(-dist / 2.5);
+        // (Narrow where the page lies right on another sheet.)
+        const sheetBelow = board && u > pw && v > 0 && v < ph;
+        light *= 1 - 0.3 * Math.exp(-dist / (sheetBelow ? 0.5 : 2.5));
         if (s.background === 'wood') {
           const grain = Math.sin(x * 0.006 + Math.sin(y * 0.0013) * 6) * 0.5 + 0.5;
           R = 120 + grain * 50;
@@ -483,12 +545,53 @@ export async function photograph(doc: DocSpec, overrides: Partial<Scene>): Promi
           R = 236 + t;
           G = 236 + t;
           B = 232 + t;
+        } else if (cork && cork2) {
+          const t = cork(x / W, y / H) * 0.6 + cork2(x / W, y / H) * 0.4;
+          const pit = ((x * 7919 + y * 104729) % 97) / 97 < 0.04 ? -35 : 0;
+          R = 150 + t * 45 + pit;
+          G = 112 + t * 35 + pit;
+          B = 72 + t * 22 + pit;
         } else {
           // Grey office desk with a slight speckle.
           const t = ((x * 7 + y * 13) % 17) / 17;
           R = 150 + t * 6;
           G = 152 + t * 6;
           B = 156 + t * 6;
+        }
+      }
+      if (board && !onSheet(u, v)) {
+        const un = u / pw;
+        const vn = v / ph;
+        // Business cards just above the page, pinned a little askew: 1 to
+        // 7 mm of board between.
+        const card =
+          (un > -0.06 && un < 0.42 && vn > -0.17 && vn < -0.004 - 0.025 * (un + 0.06)) ||
+          (un > 0.5 && un < 0.97 && vn > -0.14 && vn < -0.024 + 0.03 * (un - 0.5));
+        // The neighbouring sheet, under this one's right edge.
+        const sheet = un > 0.95 && un < 2 && vn > 0.01 && vn < 1.004;
+        if (card || sheet) {
+          // Lines of "text": 2 mm apart, a third of that high.
+          const line = vn * 150;
+          const frac = line - Math.floor(line);
+          const ink =
+            frac < 0.3 &&
+            ((sheet && un > 1.06 && vn > 0.08 && un < 1.06 + ((Math.floor(line) * 37) % 23) / 40) ||
+              (card && vn > -0.1 && vn < -0.04 && un % 0.5 > 0.08 && un % 0.5 < 0.35));
+          const paper = sheet ? 226 : 240;
+          R = G = B = ink ? 50 : paper;
+          // In the shade of the sheet on top, close to its edge.
+          if (sheet) light *= 1 - 0.06 * Math.exp(-Math.max(0, un - 1) * 40);
+        }
+      }
+      for (const pin of pins) {
+        const d = Math.hypot(x - pin.x, y - pin.y);
+        if (d < pin.r) {
+          const shine = 0.8 + 0.25 * (1 - d / pin.r);
+          R = pin.c[0] * shine;
+          G = pin.c[1] * shine;
+          B = pin.c[2] * shine;
+        } else if (Math.hypot(x - pin.x - pin.r * 0.7, y - pin.y - pin.r * 0.5) < pin.r * 1.1) {
+          light *= 0.78;
         }
       }
       const n = gaussNoise(r) * s.noise;

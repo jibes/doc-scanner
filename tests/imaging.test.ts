@@ -321,6 +321,52 @@ describe('refineQuad', () => {
     }
   });
 
+  it('puts the corners of a bowed sheet at its corners, not on the bulge', () => {
+    // A sheet from (100, 80) to (300, 400) whose sides bulge out by 8 px
+    // in the middle and whose top sags in by 6 px.
+    const img = createFloat(400, 500);
+    for (let y = 0; y < 500; y++) {
+      for (let x = 0; x < 400; x++) {
+        const bulge = 8 * Math.sin((Math.PI * Math.min(320, Math.max(0, y - 80))) / 320);
+        const sag = 6 * Math.sin((Math.PI * Math.min(200, Math.max(0, x - 100))) / 200);
+        const on = x >= 100 - bulge && x < 300 + bulge && y >= 80 + sag && y < 400;
+        img.data[y * 400 + x] = on ? 0.9 : 0.25;
+      }
+    }
+    const truth: Quad = [
+      [100, 80],
+      [300, 80],
+      [300, 400],
+      [100, 400],
+    ];
+    const rough: Quad = [
+      [96, 84],
+      [305, 83],
+      [303, 404],
+      [97, 397],
+    ];
+    const err = (q: Quad) =>
+      Math.max(...q.map((p, i) => Math.hypot(p[0] - truth[i][0], p[1] - truth[i][1])));
+    // A line through each whole side misses the corners...
+    expect(err(refineQuad(img, rough, 12))).toBeGreaterThan(3);
+    // ...lines through the halves next to them do not.
+    expect(err(refineQuad(img, rough, 12, { local: true }))).toBeLessThan(2);
+  });
+
+  it('leaves the corners of a flat page alone in local mode', () => {
+    const img = createFloat(400, 500);
+    for (let y = 0; y < 500; y++)
+      for (let x = 0; x < 400; x++)
+        img.data[y * 400 + x] = x >= 100 && x < 300 && y >= 80 && y < 400 ? 0.9 : 0.25;
+    const rough: Quad = [
+      [98, 81],
+      [302, 79],
+      [301, 402],
+      [99, 398],
+    ];
+    expect(refineQuad(img, rough, 8, { local: true })).toEqual(refineQuad(img, rough, 8));
+  });
+
   it('keeps the input when there is no edge to find', () => {
     const flat = createFloat(200, 200);
     flat.data.fill(0.5);

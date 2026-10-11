@@ -71,6 +71,45 @@ export function isConvex(q: Quad): boolean {
   return true;
 }
 
+/** Interior angles of a convex quad, radians, one per corner. */
+export function interiorAngles(q: Quad): number[] {
+  return q.map((c, i) => {
+    const p = q[(i + 3) % 4];
+    const n = q[(i + 1) % 4];
+    const a = Math.atan2(p[1] - c[1], p[0] - c[0]);
+    const b = Math.atan2(n[1] - c[1], n[0] - c[0]);
+    const d = Math.abs(a - b);
+    return d > Math.PI ? 2 * Math.PI - d : d;
+  });
+}
+
+/** Sharpest and bluntest corner a photographed rectangle plausibly shows. */
+const PLAUSIBLE_ANGLE = (30 * Math.PI) / 180;
+/** Opposite sides of a photographed rectangle: the shorter at least this share of the longer. */
+const PLAUSIBLE_FORESHORTENING = 0.4;
+
+/**
+ * Whether a quad can be the photo of a flat rectangular page: convex, no
+ * corner sharper than 30° (or blunter than 150°), each pair of opposite
+ * sides within the foreshortening a phone's perspective produces, and at
+ * least `minArea` of the `width` × `height` photo.
+ */
+export function plausibleQuad(q: Quad, width: number, height: number, minArea = 0.05): boolean {
+  if (!q.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y))) return false;
+  if (!isConvex(q)) return false;
+  if (interiorAngles(q).some((a) => a < PLAUSIBLE_ANGLE || a > Math.PI - PLAUSIBLE_ANGLE)) {
+    return false;
+  }
+  const side = (i: number) => distance(q[i], q[(i + 1) % 4]);
+  for (const [a, b] of [
+    [side(0), side(2)],
+    [side(1), side(3)],
+  ]) {
+    if (Math.min(a, b) < PLAUSIBLE_FORESHORTENING * Math.max(a, b)) return false;
+  }
+  return quadArea(q) >= minArea * width * height;
+}
+
 /**
  * Put four arbitrary points into TL, TR, BR, BL order (image coordinates, y
  * down): sort by angle around the centroid, then rotate so the corner with the
