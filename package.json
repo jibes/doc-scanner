@@ -15,7 +15,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "icons": "node scripts/generate-icons.mjs",
-    "e2e": "node tests/e2e/run.mjs"
+    "e2e": "node tests/e2e/run.mjs",
+    "e2e:quick": "node tests/e2e/run.mjs --only letter_a4,receipt,faded,flyer_blue,photos,pinboard,ruled_close,scan_150dpi,rot90,coloured_text --no-ocr --no-clean-ocr --no-ui",
+    "e2e:ocr": "node tests/e2e/run.mjs --only letter_a4,german,receipt,low_light --no-clean-ocr --no-ui"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
