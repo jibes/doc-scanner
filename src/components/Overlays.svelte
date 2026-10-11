@@ -1,46 +1,92 @@
 <script lang="ts">
+  import { cubicOut } from 'svelte/easing';
   import { fade, fly } from 'svelte/transition';
+  import { dismissInstall, install, promptInstall } from '../lib/onboarding.svelte';
   import { dismissToast, ui } from '../lib/ui.svelte';
   import { applyUpdate, dismissUpdate, update } from '../lib/update.svelte';
+  import Icon from './Icon.svelte';
+
+  interface Props {
+    /** The screen on show: the install offer belongs to the document. */
+    screen: string;
+  }
+
+  let { screen }: Props = $props();
+
+  const showUpdate = $derived((update.ready || update.applied) && !ui.busy);
+  // One notice at a time: the update wins.
+  const showInstall = $derived(
+    screen === 'document' && install.offer !== null && !ui.busy && !showUpdate,
+  );
+
+  const enter = { y: 8, duration: 200, easing: cubicOut };
+  const leave = { duration: 150 };
 </script>
 
 {#if ui.busy}
   <div class="busy" role="status" aria-live="polite" transition:fade={{ duration: 150 }}>
-    <div class="spinner"></div>
-    <div class="label">{ui.busy.label}</div>
-    {#if ui.busy.progress !== null}
-      <div class="bar"><div style="width: {Math.round(ui.busy.progress * 100)}%"></div></div>
-    {/if}
-    {#if ui.busy.action}
-      {@const action = ui.busy.action}
-      <button class="action" onclick={() => action.run()}>{action.label}</button>
-    {/if}
+    <div class="busy-card">
+      <div class="spinner"></div>
+      <div class="busy-label">{ui.busy.label}</div>
+      {#if ui.busy.progress !== null}
+        <div class="line"><div style:width="{Math.round(ui.busy.progress * 100)}%"></div></div>
+      {/if}
+      {#if ui.busy.action}
+        {@const action = ui.busy.action}
+        <button class="ghost" onclick={() => action.run()}>{action.label}</button>
+      {/if}
+    </div>
   </div>
 {/if}
 
-{#if (update.ready || update.applied) && !ui.busy}
-  <div class="update" role="status" aria-live="polite" transition:fly={{ y: -12, duration: 180 }}>
-    <span>{update.applied ? 'Updated in another window' : 'New version ready'}</span>
-    <button class="update-reload" onclick={() => void applyUpdate()}>Reload</button>
-    <button class="update-later" onclick={dismissUpdate} aria-label="Later">×</button>
-  </div>
-{/if}
+<!--
+  Every notification in one stack, just above the current screen's bottom
+  controls: notices on top, then the latest message, then running work.
+-->
+<div class="stack" style:--dock="{ui.dock}px">
+  {#if showUpdate}
+    <div class="note" role="status" aria-live="polite" in:fly={enter} out:fade={leave}>
+      <span class="message"
+        >{update.applied ? 'Updated in another window' : 'New version ready'}</span
+      >
+      <button class="act" onclick={() => void applyUpdate()}>Reload</button>
+      <button class="close" onclick={dismissUpdate} aria-label="Later">
+        <Icon name="close" size={18} />
+      </button>
+    </div>
+  {:else if showInstall}
+    <div class="note" role="status" in:fly={enter} out:fade={leave}>
+      {#if install.offer === 'prompt'}
+        <span class="message">Install the app to use it offline</span>
+        <button class="act" onclick={() => void promptInstall()}>Install</button>
+      {:else}
+        <span class="message">Install: tap <b>Share</b>, then <b>Add to Home Screen</b></span>
+      {/if}
+      <button class="close" onclick={dismissInstall} aria-label="Not now">
+        <Icon name="close" size={18} />
+      </button>
+    </div>
+  {/if}
 
-<div class="stack">
   {#if ui.toast}
     {#key ui.toast.key}
       <div
-        class="toast {ui.toast.kind}"
-        role="status"
-        aria-live="polite"
-        in:fly={{ y: 12, duration: 180 }}
-        out:fade={{ duration: 120 }}
+        class="note {ui.toast.kind}"
+        role={ui.toast.kind === 'err' ? 'alert' : 'status'}
+        aria-live={ui.toast.kind === 'err' ? 'assertive' : 'polite'}
+        in:fly={enter}
+        out:fade={leave}
       >
-        <span>{ui.toast.message}</span>
+        {#if ui.toast.kind !== 'info'}
+          <span class="mark" aria-hidden="true">
+            <Icon name={ui.toast.kind === 'good' ? 'check' : 'alert'} size={18} />
+          </span>
+        {/if}
+        <span class="message">{ui.toast.message}</span>
         {#if ui.toast.action}
           {@const action = ui.toast.action}
           <button
-            class="toast-action"
+            class="act"
             onclick={() => {
               action.run();
               dismissToast();
@@ -56,26 +102,18 @@
   {#if ui.task}
     {@const task = ui.task}
     <!-- An export or upload in progress: compact, so the app stays usable. -->
-    <div
-      class="task"
-      role="status"
-      aria-live="polite"
-      in:fly={{ y: 12, duration: 180 }}
-      out:fade={{ duration: 120 }}
-    >
-      <div class="task-row">
-        <span class="task-label">{task.label}</span>
-        {#if task.action}
-          {@const action = task.action}
-          <button class="toast-action" onclick={() => action.run()}>{action.label}</button>
-        {/if}
-        {#if task.cancel}
-          {@const cancel = task.cancel}
-          <button class="task-cancel" onclick={() => cancel()}>Cancel</button>
-        {/if}
-      </div>
+    <div class="note task" role="status" aria-live="polite" in:fly={enter} out:fade={leave}>
+      <span class="message">{task.label}</span>
+      {#if task.action}
+        {@const action = task.action}
+        <button class="act" onclick={() => action.run()}>{action.label}</button>
+      {/if}
+      {#if task.cancel}
+        {@const cancel = task.cancel}
+        <button class="act quiet" onclick={() => cancel()}>Cancel</button>
+      {/if}
       <div
-        class="task-bar"
+        class="track"
         class:indeterminate={task.progress === null}
         role="progressbar"
         aria-label={task.label}
@@ -92,150 +130,112 @@
 </div>
 
 <style>
-  .update {
-    position: fixed;
-    /* Below the screens' top bars, so it never covers their buttons. */
-    top: calc(68px + env(safe-area-inset-top, 0px));
-    left: 12px;
-    right: 12px;
-    margin: 0 auto;
-    width: fit-content;
-    max-width: calc(100% - 24px);
-    z-index: 40;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    white-space: nowrap;
-    padding: 8px 8px 8px 16px;
-    border-radius: 999px;
-    background: var(--panel-3);
-    color: var(--text);
-    box-shadow: 0 6px 24px rgb(0 0 0 / 35%);
-    font-size: 14px;
-  }
-
-  .update-reload {
-    padding: 6px 14px;
-    border-radius: 999px;
-    border: none;
-    background: var(--accent);
-    color: #fff;
-    font-weight: 600;
-  }
-
-  .update-later {
-    padding: 4px 10px;
-    border: none;
-    background: transparent;
-    color: var(--muted);
-    font-size: 18px;
-  }
-
-  .busy {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 14px;
-    background: rgb(0 0 0 / 70%);
-    backdrop-filter: blur(6px);
-    color: #fff;
-  }
-
-  .label {
-    font-size: 14px;
-    text-align: center;
-    max-width: 30ch;
-  }
-
-  .bar {
-    width: 220px;
-    height: 4px;
-    border-radius: 2px;
-    background: rgb(255 255 255 / 15%);
-    overflow: hidden;
-  }
-
-  .bar > div {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.2s ease;
-  }
-
-  .action {
-    margin-top: 6px;
-    background: rgb(255 255 255 / 12%);
-    border-color: rgb(255 255 255 / 25%);
-    color: #fff;
-    font-size: 13px;
-  }
-
   .stack {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(96px + var(--safe-bottom));
+    bottom: calc(max(var(--dock), var(--safe-bottom)) + var(--s-3));
     z-index: 60;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: var(--s-2);
+    padding: 0 var(--s-4);
     pointer-events: none;
+    transition: bottom var(--dur-2) var(--ease);
   }
 
-  .task {
+  .note {
     pointer-events: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    width: min(92vw, 480px);
-    padding: 10px 10px 12px 16px;
-    border-radius: 12px;
-    background: var(--panel-3);
-    color: var(--text);
-    border: 1px solid var(--border);
-    box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
-    font-size: 14px;
-  }
-
-  .task-row {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 8px;
-  }
-
-  .task-label {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .task-cancel {
-    flex: 0 0 auto;
-    padding: 6px 12px;
-    font-size: 13px;
-    background: transparent;
-    color: var(--muted);
-  }
-
-  .task-bar {
-    height: 4px;
-    margin-right: 6px;
-    border-radius: 2px;
-    background: var(--panel-2);
+    gap: var(--s-1);
+    width: 100%;
+    max-width: 440px;
+    min-height: 48px;
+    padding: var(--s-1) var(--s-1) var(--s-1) var(--s-4);
+    border-radius: var(--r-l);
+    background: var(--toast-bg);
+    color: var(--toast-fg);
+    box-shadow: var(--shadow-2);
+    font-size: var(--fs-caption);
+    line-height: 1.35;
     overflow: hidden;
   }
 
-  .task-bar > div {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.2s ease;
+  .message {
+    flex: 1;
+    min-width: 0;
+    padding: var(--s-2) var(--s-2) var(--s-2) 0;
   }
 
-  .task-bar.indeterminate > div {
-    animation: slide 1.2s ease-in-out infinite;
+  .mark {
+    display: flex;
+    margin-right: var(--s-2);
+  }
+
+  .good .mark {
+    color: var(--toast-good);
+  }
+
+  .err .mark {
+    color: var(--toast-err);
+  }
+
+  .act {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 0 var(--s-3);
+    border-radius: var(--r-m);
+    background: transparent;
+    color: var(--toast-accent);
+    font-size: var(--fs-caption);
+    font-weight: 650;
+  }
+
+  .act.quiet {
+    color: var(--toast-fg-2);
+  }
+
+  @media (hover: hover) {
+    .act:hover:not(:disabled),
+    .close:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--toast-fg) 10%, transparent);
+    }
+  }
+
+  .close {
+    flex: 0 0 auto;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-m);
+    background: transparent;
+    color: var(--toast-fg-2);
+  }
+
+  /* Progress: a hairline along the card's bottom edge. */
+  .track {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: color-mix(in srgb, var(--toast-fg) 12%, transparent);
+  }
+
+  .track > div {
+    height: 100%;
+    background: var(--toast-accent);
+    transition: width var(--dur-3) var(--ease);
+  }
+
+  .track.indeterminate > div {
+    animation: slide 1.2s var(--ease) infinite;
   }
 
   @keyframes slide {
@@ -247,36 +247,50 @@
     }
   }
 
-  .toast {
-    pointer-events: auto;
+  .busy {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
     display: flex;
     align-items: center;
-    gap: 12px;
-    width: max-content;
-    max-width: min(92vw, 480px);
-    padding: 10px 10px 10px 16px;
-    border-radius: 12px;
-    background: var(--panel-3);
+    justify-content: center;
+    padding: var(--s-6);
+    background: var(--scrim);
+  }
+
+  .busy-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-3);
+    width: min(320px, 100%);
+    padding: var(--s-6);
+    border-radius: var(--r-xl);
+    background: var(--surface);
     color: var(--text);
-    border: 1px solid var(--border);
-    box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
-    font-size: 14px;
+    box-shadow: var(--shadow-3);
   }
 
-  .toast.good {
-    border-color: rgb(34 197 94 / 50%);
+  .busy-card .spinner {
+    color: var(--accent-text);
   }
 
-  .toast.err {
-    border-color: rgb(239 68 68 / 60%);
+  .busy-label {
+    font-size: var(--fs-body);
+    text-align: center;
   }
 
-  .toast-action {
-    flex: 0 0 auto;
-    padding: 6px 12px;
-    font-weight: 600;
-    color: var(--accent);
-    background: transparent;
-    border-color: transparent;
+  .line {
+    width: 100%;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--fill);
+    overflow: hidden;
+  }
+
+  .line > div {
+    height: 100%;
+    background: var(--accent);
+    transition: width var(--dur-3) var(--ease);
   }
 </style>

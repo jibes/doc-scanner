@@ -148,7 +148,7 @@
 
   <SettingsDialog bind:this={settingsDialog} {settings} onSave={updateSettings} />
   <Onboarding screen={session.loaded ? screen.name : 'boot'} />
-  <Overlays />
+  <Overlays screen={session.loaded ? screen.name : 'boot'} />
 </main>
 
 <style>

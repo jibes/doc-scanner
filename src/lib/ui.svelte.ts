@@ -24,7 +24,32 @@ export const ui = $state({
   busy: null as null | { label: string; progress: number | null; action?: UiAction },
   task: null as null | Task,
   toast: null as null | { message: string; kind: ToastKind; key: number; action?: UiAction },
+  /** Height in px of the current screen's bottom controls: notifications sit just above. */
+  dock: 0,
 });
+
+/**
+ * Mark an element as the screen's bottom controls (`use:dock`): the
+ * notification stack keeps clear of it, so it never covers the primary action.
+ */
+let docked: HTMLElement | null = null;
+
+export function dock(element: HTMLElement): { destroy: () => void } {
+  docked = element;
+  const observer = new ResizeObserver(() => {
+    if (docked === element) ui.dock = element.offsetHeight;
+  });
+  observer.observe(element);
+  ui.dock = element.offsetHeight;
+  return {
+    destroy() {
+      observer.disconnect();
+      if (docked !== element) return;
+      docked = null;
+      ui.dock = 0;
+    },
+  };
+}
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
