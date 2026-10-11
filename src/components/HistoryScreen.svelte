@@ -5,22 +5,32 @@
   import { haptic } from '../lib/haptics';
   import {
     deleteHistory,
+    forgetPages,
+    keptPages,
     loadHistory,
+    pruneDocuments,
     refreshPendingUploads,
+    storedDocumentIds,
     updateHistory,
     type HistoryEntry,
   } from '../lib/history';
   import { isConfigured, pollTask, storedOutcome, uploadDocument } from '../lib/paperless';
   import type { AppSettings } from '../lib/settings';
-  import { busy, errorMessage, idle, toast } from '../lib/ui.svelte';
+  import { session } from '../lib/store/session.svelte';
+  import { busy, errorMessage, idle, toast, ui } from '../lib/ui.svelte';
   import Icon from './Icon.svelte';
 
   interface Props {
     settings: AppSettings;
     onBack: () => void;
+    /** A document from History was opened for editing. */
+    onEdit: () => void;
   }
 
-  let { settings, onBack }: Props = $props();
+  let { settings, onBack, onEdit }: Props = $props();
+
+  /** Entries whose pages are kept, so they can be edited again. */
+  const editable = new SvelteSet<string>();
 
   let entries = $state.raw<HistoryEntry[]>([]);
   let loaded = $state(false);
@@ -28,6 +38,12 @@
   const uploading = new SvelteSet<string>();
 
   onMount(() => {
+    // Pages kept for entries that were removed meanwhile are dropped first.
+    void pruneDocuments()
+      .then(storedDocumentIds)
+      .then((ids) => {
+        for (const id of ids) editable.add(id);
+      });
     void loadHistory().then(async (list) => {
       entries = list;
       loaded = true;
@@ -153,16 +169,51 @@
     }
   }
 
+  /** How long a removed entry's kept pages outlive it, so Undo can bring them back too. */
+  const FORGET_PAGES_MS = 8000;
+
   function remove(entry: HistoryEntry) {
     entries = entries.filter((e) => e.id !== entry.id);
     void deleteHistory(entry.id);
+    // Pages left behind if the app closes first are dropped on the next visit.
+    const forget = setTimeout(() => {
+      editable.delete(entry.id);
+      void forgetPages(entry.id);
+    }, FORGET_PAGES_MS);
     toast('Removed from history.', 'info', {
       label: 'Undo',
       run: () => {
+        clearTimeout(forget);
         void updateHistory(entry);
         entries = [...entries, entry].sort((a, b) => b.createdAt - a.createdAt);
       },
     });
+  }
+
+  /** Open an entry's kept pages as the document, after asking to replace a non-empty one. */
+  async function editAgain(entry: HistoryEntry) {
+    if (ui.task) {
+      toast('Wait for the current export to finish.', 'info');
+      return;
+    }
+    const n = session.pages.length;
+    if (
+      n > 0 &&
+      !confirm(
+        `Replace the ${n} ${n === 1 ? 'page' : 'pages'} you are working on with “${entry.title}”? PDFs you saved or sent to Paperless stay in History.`,
+      )
+    )
+      return;
+    const pages = await keptPages(entry.id);
+    if (!pages?.length) {
+      editable.delete(entry.id);
+      toast('The pages of this document are no longer kept.', 'err');
+      return;
+    }
+    session.open(pages, entry.title);
+    haptic('success');
+    toast(`Opened “${entry.title}” for editing.`, 'good');
+    onEdit();
   }
 
   const OUTCOME: Record<NonNullable<HistoryEntry['outcome']>, string> = {
@@ -209,6 +260,21 @@
               {entry.kind === 'upload' && entry.outcome ? OUTCOME[entry.outcome] : 'Saved as PDF'}
               {#if !entry.pdf}· file no longer kept{/if}
             </div>
+            <button
+              class="edit"
+              onclick={() => void editAgain(entry)}
+              disabled={!editable.has(entry.id)}
+              aria-label="Edit {entry.title} again"
+              title={editable.has(entry.id)
+                ? 'Open its pages as the document'
+                : 'Its pages are no longer kept'}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+              </svg>
+              Edit again
+            </button>
           </div>
           <div class="actions">
             {#if sharing}
@@ -249,7 +315,10 @@
         </li>
       {/each}
     </ul>
-    <p class="note">The last 15 PDFs are kept on this device for sharing again.</p>
+    <p class="note">
+      The last 15 PDFs are kept on this device for sharing again, and the pages of the last 10
+      documents for editing again.
+    </p>
   {/if}
 </section>
 
@@ -345,6 +414,33 @@
   .actions {
     display: flex;
     gap: 2px;
+  }
+
+  .edit {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    padding: 5px 10px 5px 8px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--panel-2);
+  }
+
+  .edit svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .edit:disabled {
+    color: var(--muted);
   }
 
   .danger {
