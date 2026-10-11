@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { estimatePaper, flattenPaper } from '../src/lib/imaging/background';
 import { boxMean, darkClassLevel, gaussian, maxFilter, minFilter } from '../src/lib/imaging/box';
 import { dilate, labelComponents, removeSmallComponents } from '../src/lib/imaging/components';
-import { applyFilter } from '../src/lib/imaging/filters';
+import { applyFilter, applyFilterForText } from '../src/lib/imaging/filters';
 import { createFloat, rotateRGBA, toLuma, type Quad } from '../src/lib/imaging/image';
 import { BLURRED_BELOW, isBlurred, sharpness } from '../src/lib/imaging/sharpness';
 import { refineQuad } from '../src/lib/imaging/refine';
@@ -252,6 +252,20 @@ describe('applyFilter', () => {
     const a = applyFilter(src, 'document');
     const b = applyFilter(src, 'document');
     expect(Buffer.from(a.data).equals(Buffer.from(b.data))).toBe(true);
+  });
+
+  it('hands text recognition the flattened grey page for Document and B&W', () => {
+    const gray = applyFilter(src, 'gray');
+    for (const filter of ['document', 'bw'] as const) {
+      const { image, reading } = applyFilterForText(src, filter);
+      // The page itself is exactly what applyFilter gives.
+      expect(Buffer.from(image.data).equals(Buffer.from(applyFilter(src, filter).data))).toBe(true);
+      // The reading page is the Grey filter's: unthresholded, with mid-tones.
+      expect(Buffer.from(reading.data).equals(Buffer.from(gray.data))).toBe(true);
+    }
+    // Other filters are read as they are.
+    const color = applyFilterForText(src, 'color');
+    expect(color.reading).toBe(color.image);
   });
 });
 
