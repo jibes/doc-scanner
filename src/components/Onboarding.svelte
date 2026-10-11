@@ -43,7 +43,7 @@
 {/if}
 
 {#if showInstall}
-  <div class="install" role="status" transition:fly={{ y: -12, duration: 180 }}>
+  <div class="install" role="status" transition:fly={{ y: 12, duration: 180 }}>
     {#if install.offer === 'prompt'}
       <span>Use it like an app, offline too</span>
       <button class="install-go" onclick={() => void promptInstall()}>
@@ -121,8 +121,9 @@
 
   .install {
     position: fixed;
-    /* Where the update notice goes: below the top bar, clear of its buttons. */
-    top: calc(68px + var(--safe-top));
+    /* Just above the document's bottom bar (12 + 50 + 12 px), clear of the
+       filter chips and of the update notice at the top. */
+    bottom: calc(86px + var(--safe-bottom));
     left: 12px;
     right: 12px;
     margin: 0 auto;
