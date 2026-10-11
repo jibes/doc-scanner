@@ -81,8 +81,75 @@ let reading = 0;
 let readerIdle: ReturnType<typeof setTimeout> | undefined;
 const ready = new Map<string, EncodedPage>();
 const inFlight = new Map<string, Promise<EncodedPage>>();
+/** Keys whose text has been read (successfully) and is attached to their `ready` entry. */
+const read = new Set<string>();
 let paused = false;
 let generation = 0;
+/** Whether the background prefetch also reads the text (OCR on and its models downloaded). */
+let readsText = false;
+
+/*
+ * Progress, for the document grid: listeners are told (at most once per
+ * microtask) whenever a page's export render or text changes state.
+ */
+const statusListeners = new Set<() => void>();
+let notifying = false;
+
+function changed(): void {
+  if (notifying) return;
+  notifying = true;
+  queueMicrotask(() => {
+    notifying = false;
+    for (const listener of statusListeners) listener();
+  });
+}
+
+/** Be told when a page's export state may have changed; returns an unsubscribe function. */
+export function onExportStatus(listener: () => void): () => void {
+  statusListeners.add(listener);
+  return () => statusListeners.delete(listener);
+}
+
+/**
+ * Where a page's export stands:
+ * - `queued`: nothing prepared yet;
+ * - `rendering`: its export render is being made;
+ * - `rendered`: rendered, without text (not wanted, not read yet, or OCR failed);
+ * - `reading`: rendered, text being recognised;
+ * - `read`: rendered with its text.
+ */
+export type ExportPhase = 'queued' | 'rendering' | 'rendered' | 'reading' | 'read';
+
+export function exportPhase(page: Page, settings: AppSettings): ExportPhase {
+  const k = key(page, settings);
+  const entry = ready.get(k);
+  if (entry?.text) return read.has(k) ? 'read' : 'reading';
+  if (inFlight.has(k)) return 'rendering';
+  return entry ? 'rendered' : 'queued';
+}
+
+/** Whether the background prefetch reads pages' text, so "PDF" can become ready without waiting. */
+export function prefetchReadsText(): boolean {
+  return readsText;
+}
+
+/**
+ * A page's recognised text, if it has already been read (never starts any
+ * work): the words, and the size of the upright page they are placed on.
+ */
+export function readText(
+  page: Page,
+  settings: AppSettings,
+): Promise<{ words: OcrWord[]; width: number; height: number }> | null {
+  const k = key(page, settings);
+  const entry = ready.get(k);
+  if (!entry?.text || !read.has(k)) return null;
+  return entry.text.then(({ words, turn }) =>
+    turn % 2
+      ? { words, width: entry.height, height: entry.width }
+      : { words, width: entry.width, height: entry.height },
+  );
+}
 
 function worker(): ProcessorClient {
   if (!exporter || exporter.dead) exporter = new ProcessorClient();
@@ -170,19 +237,27 @@ async function encode(page: Page, settings: AppSettings, text: boolean): Promise
               y1: w.y1 * toPage,
             }));
             if (turn) settleTurn(page, settings, turn, scaled);
+            if (ready.get(k) === entry) read.add(k);
+            changed();
             return { words: scaled, turn };
           })
           .catch(() => {
             // This export goes out without text; the next one tries again.
             if (ready.get(k) === entry) ready.set(k, { ...entry, text: null });
+            changed();
             return { words: [], turn: 0 };
           });
       }
       ready.set(k, entry);
+      read.delete(k);
       return entry;
     })
-    .finally(() => inFlight.delete(k));
+    .finally(() => {
+      inFlight.delete(k);
+      changed();
+    });
   inFlight.set(k, running);
+  changed();
   return running;
 }
 
@@ -197,8 +272,11 @@ function settleTurn(page: Page, settings: AppSettings, turn: number, words: OcrW
   void encode(upright, settings, false)
     .then((entry) => {
       const k = key(upright, settings);
-      if (ready.get(k) === entry && !entry.text)
+      if (ready.get(k) === entry && !entry.text) {
         ready.set(k, { ...entry, text: Promise.resolve(text) });
+        read.add(k);
+        changed();
+      }
     })
     .catch(() => undefined);
   for (const listener of turnListeners) listener(page, upright);
@@ -236,10 +314,19 @@ export function encodedPage(
  */
 export function prefetchExports(pages: Page[], settings: AppSettings): void {
   const wanted = new Set(pages.map((p) => key(p, settings)));
-  for (const k of [...ready.keys()]) if (!wanted.has(k)) ready.delete(k);
+  for (const k of [...ready.keys()]) {
+    if (wanted.has(k)) continue;
+    ready.delete(k);
+    read.delete(k);
+  }
+  changed();
   const run = ++generation;
   void (async () => {
     const text = settings.ocr && (await ocrModelsCached());
+    if (run === generation && readsText !== text) {
+      readsText = text;
+      changed();
+    }
     for (const page of pages) {
       if (paused || run !== generation) return;
       try {

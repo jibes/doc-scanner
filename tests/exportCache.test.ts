@@ -191,4 +191,32 @@ describe('export cache', () => {
     const reads = FakeWorker.all.flatMap((w) => w.posted).filter((m) => m.type === 'ocr');
     expect(reads[0].orient).toBe(false);
   });
+
+  it('reports how far each page has got, and its text once read', async () => {
+    cachedModels(3);
+    const cache = await import('../src/lib/exportCache');
+    const seen = new Set<string>();
+    cache.onExportStatus(() => seen.add(cache.exportPhase(page, DEFAULT_SETTINGS)));
+    expect(cache.exportPhase(page, DEFAULT_SETTINGS)).toBe('queued');
+    expect(cache.readText(page, DEFAULT_SETTINGS)).toBeNull();
+    cache.prefetchExports([page], DEFAULT_SETTINGS);
+    await vi.waitFor(() => expect(cache.exportPhase(page, DEFAULT_SETTINGS)).toBe('read'));
+    expect(cache.prefetchReadsText()).toBe(true);
+    expect(seen).toContain('rendering');
+    const text = await cache.readText(page, DEFAULT_SETTINGS);
+    expect(text).toMatchObject({ width: 20, height: 10 });
+    expect(text?.words.map((w) => w.text)).toEqual(['Hello']);
+    // An edited page starts over.
+    const edited = { ...page, spec: { quad: null, rotation: 1 } as unknown as PageSpec };
+    expect(cache.exportPhase(edited, DEFAULT_SETTINGS)).toBe('queued');
+  });
+
+  it('counts a page as rendered, not read, when its text is not read in the background', async () => {
+    cachedModels(0);
+    const cache = await import('../src/lib/exportCache');
+    cache.prefetchExports([page], DEFAULT_SETTINGS);
+    await vi.waitFor(() => expect(cache.exportPhase(page, DEFAULT_SETTINGS)).toBe('rendered'));
+    expect(cache.prefetchReadsText()).toBe(false);
+    expect(cache.readText(page, DEFAULT_SETTINGS)).toBeNull();
+  });
 });

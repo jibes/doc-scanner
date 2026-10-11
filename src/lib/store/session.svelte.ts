@@ -4,7 +4,6 @@ import type { PageSpec } from '../pipeline';
 import { toast } from '../ui.svelte';
 import {
   clearPages,
-  deletePage,
   deletePages,
   loadPages,
   loadTitle,
@@ -126,6 +125,11 @@ class Session {
    * the old document cannot bring its pages into the new one.
    */
   private generation = 0;
+
+  /** Identifies the document being worked on: changes when it is discarded or replaced. */
+  get document(): number {
+    return this.generation;
+  }
 
   /** Pages whose photo could not be saved; tried again with the next save. */
   private unsavedPhotos = new Set<string>();
@@ -271,20 +275,88 @@ class Session {
 
   /** Remove a page; returns a function that puts it back where it was. */
   remove(id: string): () => void {
-    const index = this.pages.findIndex((p) => p.id === id);
-    const page = this.pages[index];
+    return this.removeMany([id]);
+  }
+
+  /** Remove pages; returns a function that puts each back where it was. */
+  removeMany(ids: Iterable<string>): () => void {
+    const wanted = new Set(ids);
+    const removed = this.pages
+      .map((page, index) => ({ page, index }))
+      .filter(({ page }) => wanted.has(page.id));
     const generation = this.generation;
-    this.pages = this.pages.filter((p) => p.id !== id);
-    this.dirty.delete(id);
-    void deletePage(id);
+    if (removed.length === 0) return () => {};
+    this.pages = this.pages.filter((p) => !wanted.has(p.id));
+    for (const { page } of removed) this.dirty.delete(page.id);
+    void deletePages(removed.map(({ page }) => page.id));
     this.persistOrder();
     return () => {
-      if (!page || this.generation !== generation || this.get(page.id)) return;
+      if (this.generation !== generation) return;
       const next = [...this.pages];
-      next.splice(Math.min(index, next.length), 0, page);
+      // In their old order, so each lands at its old index among the others.
+      const back = removed.filter(({ page }) => !this.get(page.id));
+      for (const { page, index } of back) next.splice(Math.min(index, next.length), 0, page);
       this.pages = next;
-      // Its photo was deleted with it.
-      this.persist(page);
+      // Their photos were deleted with them.
+      for (const { page } of back) this.persist(page);
+      this.persistOrder();
+    };
+  }
+
+  /**
+   * Change several pages' specs at once (rotate, filter). Returns a function
+   * that puts back each page's previous spec, where it has not been edited
+   * since.
+   */
+  updateMany(ids: Iterable<string>, change: (spec: PageSpec) => Partial<PageSpec>): () => void {
+    const wanted = new Set(ids);
+    const generation = this.generation;
+    const previous = this.pages;
+    this.pages = this.pages.map((p) => {
+      if (!wanted.has(p.id)) return p;
+      const patch = change(p.spec);
+      // A page the user has turned is never turned again by auto-orientation.
+      const settled = 'rotation' in patch ? { oriented: true } : {};
+      return { ...p, spec: { ...p.spec, ...patch, ...settled } };
+    });
+    const specs = (pages: Page[]) =>
+      new Map(pages.filter((p) => wanted.has(p.id)).map((p) => [p.id, p.spec]));
+    const before = specs(previous);
+    const applied = specs(this.pages);
+    this.touch(before.keys());
+    return () => {
+      if (this.generation !== generation) return;
+      const restored: string[] = [];
+      this.pages = this.pages.map((p) => {
+        const old = before.get(p.id);
+        if (!old || p.spec !== applied.get(p.id)) return p;
+        restored.push(p.id);
+        return { ...p, spec: old };
+      });
+      this.touch(restored);
+    };
+  }
+
+  /**
+   * Move pages, keeping their order, to the start or the end of the
+   * document. Returns a function that puts the previous order back.
+   */
+  moveMany(ids: Iterable<string>, where: 'start' | 'end'): () => void {
+    const wanted = new Set(ids);
+    const before = this.pages.map((p) => p.id);
+    const generation = this.generation;
+    const picked = this.pages.filter((p) => wanted.has(p.id));
+    const rest = this.pages.filter((p) => !wanted.has(p.id));
+    this.pages = where === 'start' ? [...picked, ...rest] : [...rest, ...picked];
+    this.persistOrder();
+    return () => {
+      if (this.generation !== generation) return;
+      // Pages added since go after the old ones, in their current order.
+      const rank = (id: string) => {
+        const i = before.indexOf(id);
+        return i < 0 ? before.length : i;
+      };
+      this.pages = [...this.pages].sort((a, b) => rank(a.id) - rank(b.id));
       this.persistOrder();
     };
   }
@@ -353,6 +425,18 @@ class Session {
   setTitle(title: string): void {
     this.title = title;
     void saveTitle(title);
+  }
+
+  /**
+   * Replace the document with these pages and title (a document reopened
+   * from History). The pages get new ids: the same pages may be open again.
+   */
+  open(pages: Omit<Page, 'id'>[], title: string): void {
+    this.clear();
+    this.pages = pages.map((p) => ({ ...p, id: newId() }));
+    for (const page of this.pages) this.persist(page);
+    if (this.pages.length) requestPersistence();
+    this.setTitle(title);
   }
 
   clear(): void {
