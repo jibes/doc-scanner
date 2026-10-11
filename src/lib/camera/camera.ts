@@ -191,15 +191,26 @@ export async function captureStill(
   video: HTMLVideoElement,
 ): Promise<Blob> {
   if (typeof ImageCapture !== 'undefined') {
-    try {
-      const capture = new ImageCapture(track);
-      const photo = await Promise.race([
-        capture.takePhoto(),
+    const capture = new ImageCapture(track);
+    const take = (settings?: Record<string, unknown>) =>
+      Promise.race([
+        capture.takePhoto(settings),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
       ]);
-      if (photo.size > 0) return photo;
-    } catch {
-      // Fall through to the video frame.
+    // Ask for the sensor's full size: left to itself the browser may pick a
+    // smaller default. Some cameras reject explicit sizes; then its default.
+    const sizes = await capture.getPhotoCapabilities?.().catch(() => undefined);
+    const largest =
+      sizes?.imageWidth?.max && sizes.imageHeight?.max
+        ? { imageWidth: sizes.imageWidth.max, imageHeight: sizes.imageHeight.max }
+        : undefined;
+    for (const settings of largest ? [largest, undefined] : [undefined]) {
+      try {
+        const photo = await take(settings);
+        if (photo.size > 0) return photo;
+      } catch {
+        // Try the next way, then the video frame.
+      }
     }
   }
   return grabFrame(video);
