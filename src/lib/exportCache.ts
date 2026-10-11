@@ -181,6 +181,12 @@ function key(page: Page, settings: AppSettings): string {
   return `${renderKey(page, RESOLUTION_LONG_EDGE[settings.resolution], false)}|${settings.jpegQuality}`;
 }
 
+/** The browser's data saver (Chrome/Android "Lite mode", Save-Data). */
+function saveData(): boolean {
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  return connection?.saveData === true;
+}
+
 /** Whether the OCR models are already downloaded, so OCR costs no data. */
 export async function ocrModelsCached(): Promise<boolean> {
   try {
@@ -322,7 +328,11 @@ export function prefetchExports(pages: Page[], settings: AppSettings): void {
   changed();
   const run = ++generation;
   void (async () => {
-    const text = settings.ocr && (await ocrModelsCached());
+    // Read the text in the background too, so saving does not render every
+    // page again with OCR. That downloads the OCR models (~13 MB, once) on
+    // the first document, unless the browser asks to save data; then they
+    // are fetched by the first searchable save instead.
+    const text = settings.ocr && (!saveData() || (await ocrModelsCached()));
     if (run === generation && readsText !== text) {
       readsText = text;
       changed();
