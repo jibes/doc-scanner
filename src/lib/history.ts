@@ -2,20 +2,70 @@ import { checkTask, storedOutcome, type TaskResult } from './paperless';
 import type { AppSettings } from './settings';
 import {
   addHistory,
+  deleteDocument,
   deleteHistory,
+  loadDocument,
   loadHistory,
+  pruneDocuments,
+  saveDocument,
+  storedDocumentIds,
   updateHistory,
   type HistoryEntry,
 } from './store/db';
+import type { Page } from './store/session.svelte';
 
 export type { HistoryEntry };
 
-/** Record a finished document; returns the entry so it can be updated later. */
-/** Add an entry; it is saved in the background, so a slow store never holds up the caller. */
-export function recordHistory(entry: Omit<HistoryEntry, 'id' | 'createdAt'>): HistoryEntry {
+/**
+ * Record a finished document; returns the entry so it can be updated later.
+ * It is saved in the background, so a slow store never holds up the caller.
+ * With `pages`, their photos and edits are kept too (for the most recent
+ * documents only), so the document can be edited again.
+ */
+export function recordHistory(
+  entry: Omit<HistoryEntry, 'id' | 'createdAt'>,
+  pages?: readonly Page[],
+): HistoryEntry {
   const full: HistoryEntry = { ...entry, id: crypto.randomUUID(), createdAt: Date.now() };
   void addHistory(full);
+  if (pages?.length) void keepPages(full, pages);
   return full;
+}
+
+/** Store the pages a history entry was made from. Returns whether they were kept. */
+export function keepPages(entry: HistoryEntry, pages: readonly Page[]): Promise<boolean> {
+  return saveDocument({
+    id: entry.id,
+    createdAt: entry.createdAt,
+    title: entry.title,
+    bytes: pages.reduce((sum, p) => sum + p.source.size, 0),
+    pages: pages.map((p, order) => ({
+      id: p.id,
+      order,
+      source: p.source,
+      width: p.width,
+      height: p.height,
+      spec: p.spec,
+      detected: p.detected,
+      sharpness: p.sharpness,
+    })),
+  });
+}
+
+/** The pages kept for a history entry, ready to open as the document; null if none are kept. */
+export async function keptPages(id: string): Promise<Omit<Page, 'id'>[] | null> {
+  const doc = await loadDocument(id);
+  if (!doc) return null;
+  return [...doc.pages]
+    .sort((a, b) => a.order - b.order)
+    .map((p) => ({
+      source: p.source,
+      width: p.width,
+      height: p.height,
+      spec: p.spec,
+      detected: p.detected,
+      sharpness: p.sharpness ?? null,
+    }));
 }
 
 /**
@@ -45,4 +95,11 @@ export async function refreshPendingUploads(
   return changed.filter((e): e is HistoryEntry => e !== null);
 }
 
-export { deleteHistory, loadHistory, updateHistory };
+export {
+  deleteDocument as forgetPages,
+  deleteHistory,
+  loadHistory,
+  pruneDocuments,
+  storedDocumentIds,
+  updateHistory,
+};

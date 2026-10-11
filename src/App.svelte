@@ -109,7 +109,11 @@
       onHistory={() => (screen = { name: 'history' })}
     />
   {:else if screen.name === 'history'}
-    <HistoryScreen {settings} onBack={() => (screen = { name: 'document' })} />
+    <HistoryScreen
+      {settings}
+      onBack={() => (screen = { name: 'document' })}
+      onEdit={() => (screen = { name: 'document' })}
+    />
   {:else if screen.name === 'page' && currentPage}
     {@const id = screen.id}
     <PageScreen

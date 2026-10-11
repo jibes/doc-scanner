@@ -5,8 +5,24 @@ export interface UiAction {
   run: () => void;
 }
 
+/**
+ * Work that runs while the app stays usable (an export, an upload), shown as
+ * a compact bar rather than the full-screen busy overlay. One at a time.
+ */
+export interface Task {
+  /** What it produces, so the button that started it can show its progress. */
+  kind: 'pdf' | 'upload';
+  label: string;
+  progress: number | null;
+  /** A secondary way out, e.g. "Save without text". */
+  action?: UiAction;
+  /** Stops it; absent once it can no longer be stopped (the file is on its way). */
+  cancel?: () => void;
+}
+
 export const ui = $state({
   busy: null as null | { label: string; progress: number | null; action?: UiAction },
+  task: null as null | Task,
   toast: null as null | { message: string; kind: ToastKind; key: number; action?: UiAction },
 });
 
@@ -30,6 +46,26 @@ export function busy(label: string, progress: number | null = null, action?: UiA
 
 export function idle(): void {
   ui.busy = null;
+}
+
+/** Start a task; returns false (and starts nothing) if one is already running. */
+export function startTask(task: Task): boolean {
+  if (ui.task) return false;
+  ui.task = task;
+  return true;
+}
+
+/** Update the running task's label, progress and buttons. */
+export function updateTask(change: Partial<Omit<Task, 'kind'>>): void {
+  if (ui.task) ui.task = { ...ui.task, ...change };
+}
+
+export function endTask(): void {
+  ui.task = null;
+}
+
+export function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 export function errorMessage(error: unknown): string {

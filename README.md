@@ -204,12 +204,33 @@ installed app: swiped away), never under a running one.
   Android and desktop) the document screen offers "Install"; on iOS it shows
   once how to use Share → Add to Home Screen.
 - **Document:** press and hold a page to drag it to a new position. A filter
-  chip above the grid applies to every page.
+  chip above the grid applies to every page. A ring on each page shows how far
+  its export is prepared (rendered, then its text read; a green tick when
+  ready), and PDF / Paperless say "ready" once every page is. Once page 1's
+  text has been read, its most prominent line near the top is offered as the
+  title ("Use 'Der Blaue Land Bus'"); a title you typed is never replaced.
+- **Saving and uploading** run in the background: a bar shows the progress,
+  with Cancel and, while text is being read, "Save without text". You can keep
+  scrolling, viewing and editing pages; one export runs at a time. A page
+  edited, added, moved or deleted while it runs is taken into account (the
+  export does the changed pages again once it has been through the others),
+  so the file matches the document as it is when it finishes. Discarding the
+  document or opening another one from History cancels it.
+- **Select** (top bar, with two or more pages) switches the grid to
+  selection: tap pages to select them, then rotate, move them to the start or
+  end, give them a filter (the chips then apply to the selection), delete
+  them, or **split them off**. Split saves or uploads the selected pages as a
+  document of their own and then takes them out of this one, so there is
+  always just one document open; the split-off one is in History, from where
+  it can be edited again. Every bulk action can be undone from its message.
 - **Page:** swipe left or right (or use the arrow keys) to move between pages.
   "Apply … to all pages" copies this page's filter and adjustments. Deleting a
   page can be undone from the message that appears.
 - **History:** every saved PDF and upload is listed; the last 15 PDFs are kept
-  on the device to share or upload again.
+  on the device to share or upload again. The pages of the last 10 documents
+  (their photos and edits, up to 150 MB together, oldest dropped first) are
+  kept too: **Edit again** opens them as the document, after asking before it
+  replaces pages you are working on. Older entries show it greyed out.
 - Follows the system light or dark theme; the camera and crop screens stay
   dark. Reduced-motion settings turn off the animations.
 
@@ -315,7 +336,8 @@ IndexedDB, so a reload or a tab killed by the OS loses nothing.
   renders.
 - While you review the document, a second worker prepares every page at
   export resolution, so PDF and Upload usually only assemble the file. It
-  pauses while the camera is open.
+  pauses while the camera is open. Once the OCR models are downloaded (after
+  the first searchable PDF) it reads each page's text too.
 - With camera permission granted, the standard lens is opened directly
   instead of opening one camera and switching.
 
