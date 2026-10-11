@@ -115,5 +115,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // The imaging tests run whole filters on page-sized images.
+    testTimeout: 30_000,
   },
 });

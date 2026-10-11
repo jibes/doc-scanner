@@ -20,9 +20,7 @@
 
 {#if (update.ready || update.applied) && !ui.busy}
   <div class="update" role="status" aria-live="polite" transition:fly={{ y: -12, duration: 180 }}>
-    <span
-      >{update.applied ? 'Updated in another window' : 'New version ready'}</span
-    >
+    <span>{update.applied ? 'Updated in another window' : 'New version ready'}</span>
     <button class="update-reload" onclick={() => void applyUpdate()}>Reload</button>
     <button class="update-later" onclick={dismissUpdate} aria-label="Later">×</button>
   </div>
