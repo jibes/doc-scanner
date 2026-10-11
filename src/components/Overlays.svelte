@@ -21,7 +21,7 @@
 {#if (update.ready || update.applied) && !ui.busy}
   <div class="update" role="status" aria-live="polite" transition:fly={{ y: -12, duration: 180 }}>
     <span
-      >{update.applied ? 'The app was updated in another window.' : 'A new version is ready.'}</span
+      >{update.applied ? 'Updated in another window' : 'New version ready'}</span
     >
     <button class="update-reload" onclick={() => void applyUpdate()}>Reload</button>
     <button class="update-later" onclick={dismissUpdate} aria-label="Later">×</button>
@@ -59,14 +59,18 @@
 <style>
   .update {
     position: fixed;
-    top: calc(10px + env(safe-area-inset-top, 0px));
-    left: 50%;
-    transform: translateX(-50%);
+    /* Below the screens' top bars, so it never covers their buttons. */
+    top: calc(68px + env(safe-area-inset-top, 0px));
+    left: 12px;
+    right: 12px;
+    margin: 0 auto;
+    width: fit-content;
+    max-width: calc(100% - 24px);
     z-index: 40;
     display: flex;
     align-items: center;
     gap: 10px;
-    max-width: calc(100% - 24px);
+    white-space: nowrap;
     padding: 8px 8px 8px 16px;
     border-radius: 999px;
     background: var(--panel-3);
