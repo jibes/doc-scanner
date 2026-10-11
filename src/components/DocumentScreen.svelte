@@ -843,62 +843,52 @@
         <Icon name="trash" />
       </button>
       {#if sharing}
+        <!-- Open with another app (the share sheet): the usual way out. -->
         <button
-          class="icon grow export"
+          class="icon primary grow export"
           class:ready={pdfBadge.text === 'ready'}
           style:--progress={pdfBadge.progress}
           onclick={() => void save()}
           disabled={!session.pages.length || !!ui.task}
-          aria-label="PDF"
+          aria-label="Share PDF"
           aria-describedby={pdfBadge.text ? 'pdf-state' : undefined}
         >
           <Icon name="share" />
           <span class="label"
-            >PDF{#if pdfBadge.text}<span class="state" id="pdf-state">{pdfBadge.text}</span
-              >{/if}</span
-          >
-        </button>
-        <button
-          class="icon"
-          onclick={() => void save(true)}
-          disabled={!session.pages.length || !!ui.task}
-          aria-label="Download PDF"
-          title="Download PDF"
-        >
-          <Icon name="download" />
-        </button>
-      {:else}
-        <button
-          class="icon grow export"
-          class:ready={pdfBadge.text === 'ready'}
-          style:--progress={pdfBadge.progress}
-          onclick={() => void save(true)}
-          disabled={!session.pages.length || !!ui.task}
-          aria-label="PDF"
-          aria-describedby={pdfBadge.text ? 'pdf-state' : undefined}
-        >
-          <Icon name="download" />
-          <span class="label"
-            >PDF{#if pdfBadge.text}<span class="state" id="pdf-state">{pdfBadge.text}</span
+            >Share{#if pdfBadge.text}<span class="state" id="pdf-state">{pdfBadge.text}</span
               >{/if}</span
           >
         </button>
       {/if}
       <button
-        class="icon primary grow export"
+        class="icon grow export"
+        class:primary={!sharing}
+        class:ready={pdfBadge.text === 'ready'}
+        style:--progress={pdfBadge.progress}
+        onclick={() => void save(true)}
+        disabled={!session.pages.length || !!ui.task}
+        aria-label="Download PDF"
+        aria-describedby={pdfBadge.text && !sharing ? 'pdf-state' : undefined}
+      >
+        <Icon name="download" />
+        <span class="label download-label"
+          >Download{#if pdfBadge.text && !sharing}<span class="state" id="pdf-state"
+              >{pdfBadge.text}</span
+            >{/if}</span
+        >
+      </button>
+      <button
+        class="icon export"
         class:ready={uploadBadge.text === 'ready'}
         style:--progress={uploadBadge.progress}
         onclick={() => void upload()}
         disabled={!session.pages.length || !!ui.task}
-        aria-label="Paperless"
-        aria-describedby={uploadBadge.text ? 'upload-state' : undefined}
+        aria-label={uploadBadge.text
+          ? `Send to Paperless (${uploadBadge.text})`
+          : 'Send to Paperless'}
+        title="Send to Paperless"
       >
         <Icon name="leaf" />
-        <span class="label"
-          >Paperless{#if uploadBadge.text}<span class="state" id="upload-state"
-              >{uploadBadge.text}</span
-            >{/if}</span
-        >
       </button>
     </div>
   {/if}
@@ -1267,6 +1257,25 @@
     font-size: 12px;
     color: var(--muted);
     text-align: center;
+  }
+
+  /* Share and Download share the room; on the narrowest phones Download is
+     its icon alone (its accessible name stays). */
+  .bottombar {
+    gap: 8px;
+  }
+
+  .bottombar .grow {
+    min-width: 0;
+    padding-left: 10px;
+    padding-right: 10px;
+    gap: 8px;
+  }
+
+  @media (max-width: 374px) {
+    .bottombar .download-label {
+      display: none;
+    }
   }
 
   /* The PDF / Paperless buttons fill from below as their export is prepared. */

@@ -296,11 +296,9 @@ async function runUiCase(browser, id, photoPath, { live = false } = {}) {
     } else {
       await input.setInputFiles(photoPath);
     }
-    // "Download" where the app offers it next to the share sheet, else "PDF".
-    let pdfButton = page.getByRole('button', { name: /^\s*PDF\s*$/ });
+    // The Download button (next to Share where the share sheet is offered).
+    const pdfButton = page.getByRole('button', { name: 'Download PDF' });
     await pdfButton.waitFor({ timeout: 120_000 });
-    const download = page.getByRole('button', { name: /Download/ });
-    if (await download.count()) pdfButton = download.first();
     t.imported = Date.now() - started;
     const toasts = await page
       .locator('[role=status], .toast')
