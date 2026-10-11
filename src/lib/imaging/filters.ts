@@ -386,7 +386,7 @@ function inkCoverage(flat: RGBAImage, adj: Adjustments, ctx: FilterContext): Ink
  * grey or black print however thin the line; and the colour is extended
  * from white until it is as dark as the blob's darkest point.
  */
-function inkColours(ink: InkLayer, color: RGBAImage): Float32Array {
+function blobColours(ink: InkLayer, color: RGBAImage): Float32Array {
   const { labels } = ink;
   const n = ink.tone.length;
   const sums = new Float64Array(n * 4);
@@ -417,6 +417,204 @@ function inkColours(ink: InkLayer, color: RGBAImage): Float32Array {
   }
   return rgb;
 }
+
+/**
+ * Coloured marks inside blobs that are not coloured as a whole: a ballpoint
+ * cross over a printed answer circle or a table rule joins them into one
+ * blob, whose mean colour is then mostly the print's grey. And ballpoint ink
+ * is dark and desaturated (navy, violet), so even alone its colour is weak
+ * next to its darkness by the measure `blobColours` uses for thin print.
+ *
+ * So colour is judged per pixel first, against the pixel's own darkness:
+ * candidate pixels are ink whose chroma is a fair share of their distance
+ * from white. Connected candidates form a mark, which keeps its colour when
+ * it is wide enough to have an inside (a pen stroke, not the one- or
+ * two-pixel colour fringe a lens or JPEG puts along black print), its
+ * pixels agree on the hue (fringes swing between opposite hues around a
+ * glyph; ink has one), and its mean colour is clearly coloured for its
+ * darkness (a cast on black print is a few units of chroma on two hundred
+ * of depth).
+ *
+ * Returns the mark of every pixel (0 = none: the pixel's blob decides) and
+ * the RGB of every mark. Mark pixels and the anti-aliased edge pixels right
+ * next to them take the mark's colour; print it touches stays as it is.
+ */
+function markColours(
+  ink: InkLayer,
+  color: RGBAImage,
+  picture: FloatImage | null,
+): { marks: Int32Array; rgb: Float32Array } | null {
+  const { labels } = ink;
+  const { width, height, data } = color;
+  const cov = ink.ink.data;
+  const n = width * height;
+  // Stroke cores of print on paper: photos and colour areas keep their own
+  // colours anyway, and their "ink" would tell nothing about the print's.
+  const core = (i: number) =>
+    labels[i] !== 0 && cov[i] <= MARK_COVERAGE && !(picture && picture.data[i] > 0);
+  // The cast the page's print has kept from the light and the camera, even
+  // once the paper is white: the mean chroma of the less colourful half of
+  // the ink, which is the black and grey print wherever there is any. Marks
+  // are judged by how far their colour is from that. Only a faint one is a
+  // cast: when even that half of the ink is clearly coloured, the page is
+  // printed or written in colour.
+  const hist = new Uint32Array(256);
+  let inkPixels = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (!core(i)) continue;
+    const mean = (data[p] + data[p + 1] + data[p + 2]) / 3;
+    const c = Math.hypot(data[p] - mean, data[p + 1] - mean, data[p + 2] - mean);
+    hist[Math.min(255, Math.round(c))]++;
+    inkPixels++;
+  }
+  if (!inkPixels) return null;
+  let median = 0;
+  for (let acc = 0; median < 255; median++) {
+    acc += hist[median];
+    if (acc * 2 >= inkPixels) break;
+  }
+  const cast = [0, 0, 0];
+  let castN = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (!core(i)) continue;
+    const mean = (data[p] + data[p + 1] + data[p + 2]) / 3;
+    if (Math.hypot(data[p] - mean, data[p + 1] - mean, data[p + 2] - mean) > median + 0.5) continue;
+    for (let c = 0; c < 3; c++) cast[c] += data[p + c] - mean;
+    castN++;
+  }
+  for (let c = 0; c < 3; c++) cast[c] /= Math.max(1, castN);
+  if (Math.hypot(cast[0], cast[1], cast[2]) > MARK_MAX_CAST) cast.fill(0);
+  // Colour with the cast taken out.
+  const at = (p: number, c: number) => data[p + c] - cast[c];
+
+  const candidate = new Uint8Array(n);
+  let any = false;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (!core(i)) continue;
+    const r = at(p, 0);
+    const g = at(p, 1);
+    const b = at(p, 2);
+    const min = Math.min(r, g, b);
+    const chroma = Math.max(r, g, b) - min;
+    if (chroma >= MARK_PIXEL_CHROMA && chroma >= MARK_PIXEL_PURITY * (255 - min)) {
+      candidate[i] = 1;
+      any = true;
+    }
+  }
+  if (!any) return null;
+  const { labels: marks, areas } = labelComponents(candidate, width, height);
+  const count = areas.length;
+  // Per mark: colour sums, summed chroma vector and its summed length, inside pixels, darkest.
+  const sums = new Float64Array(count * 8);
+  const darkest = new Float32Array(count).fill(1);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const m = marks[i];
+      if (!m) continue;
+      const p = i * 4;
+      const r = at(p, 0);
+      const g = at(p, 1);
+      const b = at(p, 2);
+      const mean = (r + g + b) / 3;
+      const o = m * 8;
+      sums[o] += r;
+      sums[o + 1] += g;
+      sums[o + 2] += b;
+      sums[o + 3] += r - mean;
+      sums[o + 4] += g - mean;
+      sums[o + 5] += b - mean;
+      sums[o + 6] += Math.hypot(r - mean, g - mean, b - mean);
+      if (
+        x > 0 &&
+        y > 0 &&
+        x < width - 1 &&
+        y < height - 1 &&
+        marks[i - 1] === m &&
+        marks[i + 1] === m &&
+        marks[i - width] === m &&
+        marks[i + width] === m
+      ) {
+        sums[o + 7]++;
+      }
+      const l = luma01(r, g, b);
+      if (l < darkest[m]) darkest[m] = l;
+    }
+  }
+  const minInside = Math.max(4, Math.round((longEdge(color) * MARK_INSIDE_EDGE) ** 2));
+  const rgb = new Float32Array(count * 3).fill(-1);
+  let kept = 0;
+  for (let m = 1; m < count; m++) {
+    const area = areas[m];
+    const o = m * 8;
+    if (!area || sums[o + 7] < minInside) continue;
+    const r = sums[o] / area;
+    const g = sums[o + 1] / area;
+    const b = sums[o + 2] / area;
+    const min = Math.min(r, g, b);
+    const chroma = Math.max(r, g, b) - min;
+    const agreement =
+      Math.hypot(sums[o + 3], sums[o + 4], sums[o + 5]) / Math.max(1e-6, sums[o + 6]);
+    // Light from a lamp or the sun leaves the darkest print a little warm,
+    // in patches, so a warm hue has to be clearly coloured to be ink.
+    const purity = isWarm(r, g, b) ? MARK_WARM_PURITY : MARK_PURITY;
+    if (chroma < MARK_CHROMA || chroma < purity * (255 - min) || agreement < MARK_AGREEMENT)
+      continue;
+    // As dark as the mark gets, in the same hue (see blobColours).
+    const depth = 1 - luma01(r, g, b);
+    const s = Math.min(2, Math.max(1, (1 - darkest[m]) / Math.max(0.05, depth)));
+    rgb[m * 3] = Math.max(0, 255 - (255 - r) * s);
+    rgb[m * 3 + 1] = Math.max(0, 255 - (255 - g) * s);
+    rgb[m * 3 + 2] = Math.max(0, 255 - (255 - b) * s);
+    kept++;
+  }
+  if (!kept) return null;
+  // Keep only accepted marks, then grow them over their blob's edge pixels
+  // (and the odd weakly coloured pixel inside the stroke), but not over the
+  // neutral core of print they touch.
+  for (let i = 0; i < n; i++) if (marks[i] && rgb[marks[i] * 3] < 0) marks[i] = 0;
+  let front: number[] = [];
+  for (let i = 0; i < n; i++) if (marks[i]) front.push(i);
+  for (let step = 0; step < MARK_GROW; step++) {
+    const next: number[] = [];
+    for (const i of front) {
+      const x = i % width;
+      const m = marks[i];
+      for (const j of [i - 1, i + 1, i - width, i + width]) {
+        if (j < 0 || j >= n || marks[j] || !labels[j]) continue;
+        if ((j === i - 1 && x === 0) || (j === i + 1 && x === width - 1)) continue;
+        if (cov[j] <= MARK_COVERAGE) {
+          // A core pixel joins only if it is coloured itself, if weakly.
+          const p = j * 4;
+          const c = Math.max(at(p, 0), at(p, 1), at(p, 2)) - Math.min(at(p, 0), at(p, 1), at(p, 2));
+          if (c < MARK_PIXEL_CHROMA / 2) continue;
+        }
+        marks[j] = m;
+        next.push(j);
+      }
+    }
+    front = next;
+  }
+  return { marks, rgb };
+}
+
+/** Ink pixels with at most this coverage (0 = ink, 1 = paper) are a stroke's core. */
+const MARK_COVERAGE = 0.5;
+/** A pixel is coloured ink with this chroma (max − min, 0..255) and purity (see blobColours). */
+const MARK_PIXEL_CHROMA = 16;
+const MARK_PIXEL_PURITY = 0.1;
+/** Largest print cast (length of the chroma vector, 0..255) taken out of marks. */
+const MARK_MAX_CAST = 8;
+/** A mark's mean colour needs this chroma and purity to keep its colour. */
+const MARK_CHROMA = 20;
+const MARK_PURITY = 0.13;
+const MARK_WARM_PURITY = 0.3;
+/** Agreement of its pixels' hues: length of the mean chroma vector over the mean length. */
+const MARK_AGREEMENT = 0.7;
+/** A mark needs an inside (pixels whose four neighbours are in it) of this length squared. */
+const MARK_INSIDE_EDGE = 0.002;
+/** Pixels by which marks grow over their edges. */
+const MARK_GROW = 3;
 
 /**
  * Remove components that lie (almost) entirely in a thin band along the image
@@ -475,6 +673,18 @@ function colorWeight(flat: RGBAImage): FloatImage {
   return weight;
 }
 
+/** Whether a colour's hue is on the warm (orange-yellow) axis of lamp and sun light. */
+function isWarm(r: number, g: number, b: number): boolean {
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  if (d <= 0) return false;
+  let hue: number;
+  if (max === r) hue = 60 * (((g - b) / d + 6) % 6);
+  else if (max === g) hue = 60 * ((b - r) / d + 2);
+  else hue = 60 * ((r - g) / d + 4);
+  return hue >= 15 && hue <= 70;
+}
+
 /**
  * The paper's own colour, as a per-channel factor (1 = white), or white when
  * the tint is more likely the light than the paper.
@@ -489,16 +699,8 @@ function colorWeight(flat: RGBAImage): FloatImage {
 export function paperTint(paper: readonly [number, number, number]): [number, number, number] {
   const [r, g, b] = paper;
   const max = Math.max(r, g, b, 1);
-  const d = max - Math.min(r, g, b);
-  const sat = d / max;
-  let hue = 0;
-  if (d > 0) {
-    if (max === r) hue = 60 * (((g - b) / d + 6) % 6);
-    else if (max === g) hue = 60 * ((b - r) / d + 2);
-    else hue = 60 * ((r - g) / d + 4);
-  }
-  const warm = hue >= 15 && hue <= 70;
-  const k = warm
+  const sat = (max - Math.min(r, g, b)) / max;
+  const k = isWarm(r, g, b)
     ? smoothstep(WARM_CAST_MAX, WARM_CAST_MAX + 0.08, sat)
     : smoothstep(OTHER_CAST_MAX, OTHER_CAST_MAX + 0.04, sat);
   return [1 - k * (1 - r / max), 1 - k * (1 - g / max), 1 - k * (1 - b / max)];
@@ -621,23 +823,71 @@ export function applyFilter(
   adj: Adjustments = DEFAULT_ADJUSTMENTS,
   ctx: FilterContext = { sourceScale: 1 },
 ): RGBAImage {
+  return filterPage(src, filter, adj, ctx, false).image;
+}
+
+/**
+ * The filtered page, plus the page as text recognition should read it.
+ *
+ * Document and B&W decide every pixel to be ink or paper, and on faint or
+ * low-resolution print that decision loses what tells letters apart (the
+ * dots of an umlaut, the bowl of an h against an n): the recogniser reads
+ * markedly better from the flattened greyscale page, which keeps every
+ * stroke's shading. That page is a by-product of these filters, so it costs
+ * little to hand over too. Other filters' output is read as it is.
+ */
+export function applyFilterForText(
+  src: RGBAImage,
+  filter: FilterId,
+  adj: Adjustments = DEFAULT_ADJUSTMENTS,
+  ctx: FilterContext = { sourceScale: 1 },
+): { image: RGBAImage; reading: RGBAImage } {
+  const { image, reading } = filterPage(src, filter, adj, ctx, true);
+  return { image, reading: reading ?? image };
+}
+
+function filterPage(
+  src: RGBAImage,
+  filter: FilterId,
+  adj: Adjustments,
+  ctx: FilterContext,
+  wantReading: boolean,
+): { image: RGBAImage; reading: RGBAImage | null } {
   // Perspective correction only: no sharpening, no tone change.
-  if (filter === 'original') return src;
+  if (filter === 'original') return { image: src, reading: null };
 
   const analysis = analysePaper(src);
   const flat = flattenPaper(src, analysis.surface);
   const greyPictures = checkPictures(analysis, flat);
   const picture = pictureWeight(analysis, src.width, src.height);
   if (filter === 'color') {
-    return onPaper(
-      enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, false, picture),
-      paperTint(analysis.paper),
-    );
+    return {
+      image: onPaper(
+        enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, false, picture),
+        paperTint(analysis.paper),
+      ),
+      reading: null,
+    };
   }
-  if (filter === 'gray') {
-    return enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, true, picture);
-  }
+  const grey = () => enhanceColor(sharpenRGBA(flat, adj.sharpen, ctx), adj, true, picture);
+  if (filter === 'gray') return { image: grey(), reading: null };
+  const reading = wantReading ? grey() : null;
+  return {
+    image: inkFilter(src, filter, adj, ctx, analysis, flat, greyPictures, picture),
+    reading,
+  };
+}
 
+function inkFilter(
+  src: RGBAImage,
+  filter: 'document' | 'bw',
+  adj: Adjustments,
+  ctx: FilterContext,
+  analysis: PaperAnalysis,
+  flat: RGBAImage,
+  greyPictures: Uint8Array,
+  picture: FloatImage | null,
+): RGBAImage {
   const layer = inkCoverage(flat, adj, ctx);
   const ink = layer.ink.data;
   const out = createRGBA(src.width, src.height);
@@ -714,14 +964,21 @@ export function applyFilter(
   // colour page. Most pages have little or no colour, so that page is only
   // computed when needed.
   const { labels, tone } = layer;
-  const colours = inkColours(layer, flat);
+  const colours = blobColours(layer, flat);
+  const marked = markColours(layer, flat, picture);
   for (let i = 0, p = 0; i < ink.length; i++, p += 4) {
     const l = labels[i];
     const c = ink[i];
+    const m = marked ? marked.marks[i] : 0;
     if (l && colours[l * 3] >= 0) {
       od[p] = colours[l * 3] + (255 - colours[l * 3]) * c;
       od[p + 1] = colours[l * 3 + 1] + (255 - colours[l * 3 + 1]) * c;
       od[p + 2] = colours[l * 3 + 2] + (255 - colours[l * 3 + 2]) * c;
+    } else if (m && marked) {
+      const rgb = marked.rgb;
+      od[p] = rgb[m * 3] + (255 - rgb[m * 3]) * c;
+      od[p + 1] = rgb[m * 3 + 1] + (255 - rgb[m * 3 + 1]) * c;
+      od[p + 2] = rgb[m * 3 + 2] + (255 - rgb[m * 3 + 2]) * c;
     } else {
       od[p] = od[p + 1] = od[p + 2] = (c + (1 - c) * tone[l]) * 255;
     }
