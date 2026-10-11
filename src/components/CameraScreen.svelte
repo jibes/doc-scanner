@@ -5,10 +5,8 @@
   import { MODEL_INPUT } from '../lib/detect/model';
   import type { FilterId } from '../lib/imaging/filters';
   import type { Point, Quad } from '../lib/imaging/image';
-  import { fallbackQuad } from '../lib/imaging/quad';
-  import { isBlurred } from '../lib/imaging/sharpness';
   import { haptic } from '../lib/haptics';
-  import { defaultSpec } from '../lib/pipeline';
+  import { addPhoto as addToDocument, importNote, importPhotos } from '../lib/importPhotos';
   import { detector } from '../lib/services';
   import { session } from '../lib/store/session.svelte';
   import { errorMessage, toast } from '../lib/ui.svelte';
@@ -58,7 +56,6 @@
 
   let cameraError = $state('');
   let cameraReady = $state(false);
-  let lensLabel = $state('');
   let torchAvailable = $state(false);
   let torchOn = $state(false);
   let detectorState = $state<'loading' | 'ready' | 'failed'>('loading');
@@ -143,7 +140,6 @@
       stream = camera.stream;
       track = camera.track;
       watchTrack(camera.track);
-      lensLabel = camera.label;
       torchAvailable = camera.torch;
       torchOn = false;
       if (video) {
@@ -359,47 +355,17 @@
 
   /* ----------------------------------------------------------- capture ---- */
 
-  async function addPhoto(
-    source: Blob,
-    imported = false,
-  ): Promise<{ id: string; found: boolean; blurred: boolean; offFrame: boolean }> {
-    let result: {
-      quad: Quad | null;
-      width: number;
-      height: number;
-      sharpness: number | null;
-      offFrame: boolean;
-    };
+  /** The detector died during a still: say so instead of failing silently. */
+  function checkDetector() {
+    if (pageDetector.dead) detectorState = 'failed';
+  }
+
+  async function addPhoto(source: Blob) {
     try {
-      result = await pageDetector.still(source);
-    } catch {
-      if (pageDetector.dead) detectorState = 'failed';
-      const bitmap = await createImageBitmap(source);
-      result = {
-        quad: null,
-        width: bitmap.width,
-        height: bitmap.height,
-        sharpness: null,
-        offFrame: false,
-      };
-      bitmap.close();
+      return await addToDocument(pageDetector, source, { filter: defaultFilter, retakeId });
+    } finally {
+      checkDetector();
     }
-    const pageQuad = result.quad ?? fallbackQuad(result.width, result.height, imported);
-    const offFrame = result.offFrame;
-    const photo = {
-      source,
-      width: result.width,
-      height: result.height,
-      detected: result.quad,
-      sharpness: result.sharpness,
-    };
-    const blurred = isBlurred(result);
-    if (retakeId && session.get(retakeId)) {
-      session.replaceSource(retakeId, { ...photo, quad: pageQuad });
-      return { id: retakeId, found: result.quad !== null, blurred, offFrame };
-    }
-    const page = session.add({ ...photo, spec: defaultSpec(pageQuad, defaultFilter) });
-    return { id: page.id, found: result.quad !== null, blurred, offFrame };
   }
 
   async function capture(auto = false) {
@@ -449,27 +415,15 @@
     input.value = '';
     if (!files.length) return;
     capturing = true;
-    let missing = 0;
-    let cut = 0;
-    try {
-      for (const file of files) {
-        const { found, offFrame } = await addPhoto(file, true);
-        if (!found) missing++;
-        if (offFrame) cut++;
-        if (retakeId) break;
-      }
-    } catch (error) {
-      toast(`Could not import: ${errorMessage(error)}`, 'err');
-    } finally {
-      capturing = false;
-    }
+    // Photos that cannot be read are skipped and counted, never thrown.
+    const summary = await importPhotos(pageDetector, files, { filter: defaultFilter, retakeId });
+    checkDetector();
+    capturing = false;
     if (!running) return;
+    const note = importNote(summary);
+    if (note) toast(note.message, note.kind);
     if (retakeId) onRetaken(retakeId);
-    else {
-      if (missing) toast(`${missing} page(s) had no detectable edges; check their crop.`, 'info');
-      else if (cut) toast(`${cut} page(s) run off the photo; check their crop.`, 'info');
-      onClose();
-    }
+    else onClose();
   }
 
   async function toggleTorch() {
@@ -558,7 +512,6 @@
       <button class="icon round" onclick={onClose} aria-label="Close camera">
         <Icon name="close" />
       </button>
-      <span class="lens">{lensLabel}</span>
       <div class="top-right">
         {#if torchAvailable}
           <button
@@ -597,18 +550,27 @@
       style="--steady: {steady}"
     ></button>
 
-    {#if retakeId}
-      <div class="thumb-slot"></div>
-    {:else if lastPage}
-      <button class="thumb" onclick={onClose} aria-label="Review {session.pages.length} pages">
-        <PageCanvas page={lastPage} longEdge={520} channel="camera-thumb" class="thumb-canvas" />
-        {#key session.pages.length}
-          <span class="count pop">{session.pages.length}</span>
-        {/key}
-      </button>
-    {:else}
-      <div class="thumb-slot"></div>
-    {/if}
+    <div class="end">
+      {#if !retakeId && lastPage}
+        {@const count = session.pages.length}
+        <button class="done" onclick={onClose} aria-label="Done, review {count} pages">
+          <span class="thumb">
+            <PageCanvas
+              page={lastPage}
+              longEdge={520}
+              channel="camera-thumb"
+              class="thumb-canvas"
+            />
+          </span>
+          <span class="done-text">
+            <strong>Done</strong>
+            {#key count}
+              <span class="pop">{count} {count === 1 ? 'page' : 'pages'}</span>
+            {/key}
+          </span>
+        </button>
+      {/if}
+    </div>
   </div>
 
   <input
@@ -705,15 +667,6 @@
     margin-left: auto;
   }
 
-  .lens {
-    font-size: 11px;
-    color: rgb(255 255 255 / 60%);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-
   .round {
     border-radius: 999px;
     background: rgb(0 0 0 / 40%);
@@ -784,18 +737,18 @@
   }
 
   .controls {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: space-between;
-    padding: 18px 28px calc(22px + var(--safe-bottom));
+    gap: 12px;
+    padding: 18px 16px calc(22px + var(--safe-bottom));
     background: #000;
   }
 
-  .controls > .round,
-  .thumb,
-  .thumb-slot {
+  .controls > .round {
     width: 56px;
     height: 56px;
+    justify-self: start;
   }
 
   .shutter {
@@ -809,35 +762,70 @@
       conic-gradient(var(--good) calc(var(--steady) * 360deg), transparent 0);
   }
 
+  .end {
+    justify-self: end;
+    min-width: 0;
+  }
+
+  /* Prominent once there are pages: the way out of the camera. */
+  .done {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+    padding: 5px 14px 5px 5px;
+    border-radius: 14px;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    text-align: left;
+  }
+
+  .done:hover:not(:disabled) {
+    background: var(--accent-strong);
+  }
+
   .thumb {
-    position: relative;
-    padding: 0;
-    border-radius: 10px;
+    flex: 0 0 auto;
+    width: 40px;
+    height: 48px;
+    border-radius: 8px;
     overflow: hidden;
-    border: 2px solid #fff;
     background: #fff;
   }
 
   .thumb :global(.thumb-canvas) {
+    display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
 
-  .count {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    min-width: 22px;
-    height: 22px;
-    padding: 0 6px;
-    border-radius: 999px;
-    background: var(--accent);
-    color: #fff;
-    font-size: 12px;
-    font-weight: 700;
+  .done-text {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .done-text strong {
+    font-size: 16px;
+  }
+
+  .done-text span {
+    font-size: 12px;
+    opacity: 0.85;
+  }
+
+  /* Small phones: the words matter more than the picture. */
+  @media (max-width: 359px) {
+    .thumb {
+      display: none;
+    }
+
+    .done {
+      padding: 8px 14px;
+    }
   }
 </style>
