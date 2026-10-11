@@ -39,14 +39,32 @@ export interface HistoryEntry {
   thumb?: Blob;
 }
 
+/**
+ * The editable pages of a finished document, so it can be reopened from
+ * History ("Edit again"). Keyed by the history entry's id.
+ */
+export interface StoredDocument {
+  id: string;
+  createdAt: number;
+  title: string;
+  pages: StoredPage[];
+  /** Total size of the pages' photos. */
+  bytes: number;
+}
+
 const DB_NAME = 'doc-scanner';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = 'pages';
 const SOURCES = 'sources';
 const META = 'meta';
 const HISTORY = 'history';
+const DOCUMENTS = 'documents';
 /** PDFs are kept for this many recent history entries. */
 const KEEP_PDFS = 15;
+/** Editable pages are kept for this many recent history entries... */
+export const KEEP_DOCUMENTS = 10;
+/** ...as long as their photos take no more than this together. */
+export const DOCUMENTS_MAX_BYTES = 150 * 1024 * 1024;
 
 let connection: Promise<IDBDatabase> | null = null;
 
@@ -99,6 +117,7 @@ function connect(): Promise<IDBDatabase> {
           db.createObjectStore(SOURCES);
           if (event.oldVersion >= 1) moveSourcesOut(request.transaction!);
         }
+        if (event.oldVersion < 4) db.createObjectStore(DOCUMENTS, { keyPath: 'id' });
       };
       request.onsuccess = () => {
         const db = request.result;
@@ -414,6 +433,137 @@ export async function updateHistory(
 export async function deleteHistory(id: string): Promise<void> {
   try {
     await run(HISTORY, 'readwrite', (s) => s.delete(id));
+  } catch {
+    // See above.
+  }
+}
+
+/* ------------------------------------------------- editable documents ---- */
+
+/**
+ * Which stored documents to drop, oldest first: those whose history entry is
+ * gone, then all beyond the newest `keep`, then the oldest until the rest
+ * (plus `incoming` bytes about to be added) fit in `maxBytes`.
+ */
+export function documentsToPrune(
+  stored: readonly Pick<StoredDocument, 'id' | 'createdAt' | 'bytes'>[],
+  {
+    entries,
+    keep = KEEP_DOCUMENTS,
+    maxBytes = DOCUMENTS_MAX_BYTES,
+    incoming = 0,
+    protect,
+  }: {
+    /** Ids of existing history entries; null when unknown (nothing counts as orphaned). */
+    entries: ReadonlySet<string> | null;
+    keep?: number;
+    maxBytes?: number;
+    /** Bytes of a document about to be stored (counted against the budget and one of `keep`). */
+    incoming?: number;
+    /** A document never to drop (the one being stored). */
+    protect?: string;
+  },
+): string[] {
+  const drop = new Set<string>();
+  const newest = [...stored].sort((a, b) => b.createdAt - a.createdAt);
+  let live = newest.filter((d) => {
+    const orphan = entries !== null && d.id !== protect && !entries.has(d.id);
+    if (orphan) drop.add(d.id);
+    return !orphan;
+  });
+  const room = incoming > 0 ? keep - 1 : keep;
+  for (const d of live.slice(Math.max(0, room))) if (d.id !== protect) drop.add(d.id);
+  live = live.filter((d) => !drop.has(d.id));
+  let total = incoming + live.reduce((sum, d) => sum + d.bytes, 0);
+  for (let i = live.length - 1; i >= 0 && total > maxBytes; i--) {
+    if (live[i].id === protect) continue;
+    drop.add(live[i].id);
+    total -= live[i].bytes;
+  }
+  return [...drop];
+}
+
+async function storedDocumentsMeta(): Promise<
+  Pick<StoredDocument, 'id' | 'createdAt' | 'bytes'>[]
+> {
+  const all = (await run<StoredDocument[]>(DOCUMENTS, 'readonly', (s) => s.getAll())) ?? [];
+  return all.map(({ id, createdAt, bytes }) => ({ id, createdAt, bytes }));
+}
+
+async function historyIds(): Promise<Set<string> | null> {
+  try {
+    const keys = (await run<IDBValidKey[]>(HISTORY, 'readonly', (s) => s.getAllKeys())) ?? [];
+    return new Set(keys.map(String));
+  } catch {
+    return null;
+  }
+}
+
+async function dropDocuments(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await runAll([DOCUMENTS], 'readwrite', (tx) => {
+    for (const id of ids) tx.objectStore(DOCUMENTS).delete(id);
+  });
+}
+
+/** Drop stored documents that are orphaned, too many or too large together. */
+export async function pruneDocuments(
+  options: { incoming?: number; protect?: string } = {},
+): Promise<void> {
+  try {
+    const stored = await storedDocumentsMeta();
+    await dropDocuments(documentsToPrune(stored, { entries: await historyIds(), ...options }));
+  } catch {
+    // See above.
+  }
+}
+
+/**
+ * Keep a finished document's pages, so it can be edited again. Older ones
+ * make room; a document too large to keep at all is not kept. Returns
+ * whether it was stored.
+ */
+export async function saveDocument(doc: StoredDocument): Promise<boolean> {
+  if (doc.bytes > DOCUMENTS_MAX_BYTES || doc.pages.length === 0) return false;
+  await pruneDocuments({ incoming: doc.bytes, protect: doc.id });
+  try {
+    await run(DOCUMENTS, 'readwrite', (s) => s.put(doc));
+    return true;
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === 'QuotaExceededError')) return false;
+  }
+  // The device is short of space: give up the other documents' pages for this one.
+  try {
+    const others = (await storedDocumentsMeta()).filter((d) => d.id !== doc.id);
+    await dropDocuments(others.map((d) => d.id));
+    await run(DOCUMENTS, 'readwrite', (s) => s.put(doc));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function loadDocument(id: string): Promise<StoredDocument | null> {
+  try {
+    return (await run<StoredDocument>(DOCUMENTS, 'readonly', (s) => s.get(id))) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ids of the history entries whose pages are kept. */
+export async function storedDocumentIds(): Promise<Set<string>> {
+  try {
+    const keys = (await run<IDBValidKey[]>(DOCUMENTS, 'readonly', (s) => s.getAllKeys())) ?? [];
+    return new Set(keys.map(String));
+  } catch {
+    return new Set();
+  }
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  try {
+    await dropDocuments([id]);
   } catch {
     // See above.
   }

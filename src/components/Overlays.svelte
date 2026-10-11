@@ -26,8 +26,8 @@
   </div>
 {/if}
 
-{#if ui.toast}
-  <div class="toast-slot">
+<div class="stack">
+  {#if ui.toast}
     {#key ui.toast.key}
       <div
         class="toast {ui.toast.kind}"
@@ -51,8 +51,45 @@
         {/if}
       </div>
     {/key}
-  </div>
-{/if}
+  {/if}
+
+  {#if ui.task}
+    {@const task = ui.task}
+    <!-- An export or upload in progress: compact, so the app stays usable. -->
+    <div
+      class="task"
+      role="status"
+      aria-live="polite"
+      in:fly={{ y: 12, duration: 180 }}
+      out:fade={{ duration: 120 }}
+    >
+      <div class="task-row">
+        <span class="task-label">{task.label}</span>
+        {#if task.action}
+          {@const action = task.action}
+          <button class="toast-action" onclick={() => action.run()}>{action.label}</button>
+        {/if}
+        {#if task.cancel}
+          {@const cancel = task.cancel}
+          <button class="task-cancel" onclick={() => cancel()}>Cancel</button>
+        {/if}
+      </div>
+      <div
+        class="task-bar"
+        class:indeterminate={task.progress === null}
+        role="progressbar"
+        aria-label={task.label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={task.progress === null ? undefined : Math.round(task.progress * 100)}
+      >
+        <div
+          style:width={task.progress === null ? '30%' : `${Math.round(task.progress * 100)}%`}
+        ></div>
+      </div>
+    </div>
+  {/if}
+</div>
 
 <style>
   .update {
@@ -136,15 +173,78 @@
     font-size: 13px;
   }
 
-  .toast-slot {
+  .stack {
     position: fixed;
     left: 0;
     right: 0;
     bottom: calc(96px + var(--safe-bottom));
     z-index: 60;
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
     pointer-events: none;
+  }
+
+  .task {
+    pointer-events: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(92vw, 480px);
+    padding: 10px 10px 12px 16px;
+    border-radius: 12px;
+    background: var(--panel-3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
+    font-size: 14px;
+  }
+
+  .task-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .task-label {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .task-cancel {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    font-size: 13px;
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .task-bar {
+    height: 4px;
+    margin-right: 6px;
+    border-radius: 2px;
+    background: var(--panel-2);
+    overflow: hidden;
+  }
+
+  .task-bar > div {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.2s ease;
+  }
+
+  .task-bar.indeterminate > div {
+    animation: slide 1.2s ease-in-out infinite;
+  }
+
+  @keyframes slide {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
   }
 
   .toast {
