@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { DragFilter } from '../lib/dragFilter';
   import type { Point, Quad } from '../lib/imaging/image';
   import { fullQuad, isConvex } from '../lib/imaging/quad';
   import { session, type Page } from '../lib/store/session.svelte';
@@ -107,8 +108,16 @@
     ];
   }
 
-  let grabOffset: Point = [0, 0];
-  let edgeStart: { pointer: Point; quad: Quad } | null = null;
+  /** Filters the finger: relative, finer after a rest, steady on lift. */
+  const filter = new DragFilter();
+  /** The filtered pointer and the quad when the drag began. */
+  let grab: { pointer: Point; quad: Quad } | null = null;
+  /** Fine movement is on: the loupe shows it. */
+  let fine = $state(false);
+
+  function clamp(p: Point): Point {
+    return [Math.min(page.width, Math.max(0, p[0])), Math.min(page.height, Math.max(0, p[1]))];
+  }
 
   function down(event: PointerEvent) {
     const p = local(event);
@@ -128,46 +137,57 @@
     event.preventDefault();
     stage!.setPointerCapture(event.pointerId);
     dragging = { kind: hit.kind, index: hit.index };
-    if (hit.kind === 'corner') {
-      const c = screenQuad[hit.index];
-      grabOffset = [c[0] - p[0], c[1] - p[1]];
-      focus = quad[hit.index];
-    } else {
-      edgeStart = { pointer: p, quad };
-      focus = toImage(midpoints[hit.index]);
-    }
+    // The handle moves with the finger from where it is: it never jumps to it.
+    grab = { pointer: filter.start(p, event.timeStamp), quad };
+    fine = false;
+    focus = hit.kind === 'corner' ? quad[hit.index] : toImage(midpoints[hit.index]);
   }
 
-  function move(event: PointerEvent) {
-    if (!dragging || !layout) return;
-    const p = local(event);
-    const next = [...quad] as Point[];
+  /** Move the dragged handle by the filtered pointer's travel since touch-down. */
+  function place(pointer: Point) {
+    if (!dragging || !grab || !layout) return;
+    const dx = (pointer[0] - grab.pointer[0]) / layout.scale;
+    const dy = (pointer[1] - grab.pointer[1]) / layout.scale;
+    const next = [...grab.quad] as Point[];
+    const i = dragging.index;
     if (dragging.kind === 'corner') {
-      next[dragging.index] = toImage([p[0] + grabOffset[0], p[1] + grabOffset[1]]);
-      focus = next[dragging.index];
-    } else if (edgeStart) {
+      next[i] = clamp([grab.quad[i][0] + dx, grab.quad[i][1] + dy]);
+      focus = next[i];
+    } else {
       // Move the edge along its normal, keeping its direction.
-      const i = dragging.index;
       const j = (i + 1) % 4;
-      const a = edgeStart.quad[i];
-      const b = edgeStart.quad[j];
+      const a = grab.quad[i];
+      const b = grab.quad[j];
       const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
       const nx = -(b[1] - a[1]) / len;
       const ny = (b[0] - a[0]) / len;
-      const dx = (p[0] - edgeStart.pointer[0]) / layout.scale;
-      const dy = (p[1] - edgeStart.pointer[1]) / layout.scale;
       const d = dx * nx + dy * ny;
-      next[i] = toImage(toScreen([a[0] + nx * d, a[1] + ny * d]));
-      next[j] = toImage(toScreen([b[0] + nx * d, b[1] + ny * d]));
+      next[i] = clamp([a[0] + nx * d, a[1] + ny * d]);
+      next[j] = clamp([b[0] + nx * d, b[1] + ny * d]);
       focus = [(next[i][0] + next[j][0]) / 2, (next[i][1] + next[j][1]) / 2];
     }
     quad = next as unknown as Quad;
   }
 
-  function up() {
+  function move(event: PointerEvent) {
+    if (!dragging) return;
+    // Every sample the browser merged into this event, for an exact history.
+    const merged = event.getCoalescedEvents?.() ?? [];
+    let pointer: Point | null = null;
+    for (const e of merged.length ? merged : [event]) {
+      pointer = filter.move(local(e), e.timeStamp);
+    }
+    if (pointer) place(pointer);
+    fine = filter.fine;
+  }
+
+  function up(event: PointerEvent) {
+    // Lifting the finger nudges the point; the filter takes that back.
+    if (dragging && event.type === 'pointerup') place(filter.end(local(event), event.timeStamp));
     dragging = null;
-    edgeStart = null;
+    grab = null;
     focus = null;
+    fine = false;
   }
 
   /** The loupe sits in the top corner away from the finger. */
@@ -260,7 +280,7 @@
       {/each}
     </svg>
     {#if focus}
-      <canvas class="loupe" class:left={loupeLeft} bind:this={loupe}></canvas>
+      <canvas class="loupe" class:left={loupeLeft} class:fine bind:this={loupe}></canvas>
     {/if}
   </div>
 
@@ -339,6 +359,11 @@
   .loupe.left {
     right: auto;
     left: 12px;
+  }
+
+  /* Fine movement: the finger rested, the corner now moves at half speed. */
+  .loupe.fine {
+    border-color: var(--accent);
   }
 
   .warn {
