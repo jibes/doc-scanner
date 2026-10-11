@@ -71,6 +71,11 @@ function encodes() {
   return FakeWorker.all.flatMap((w) => w.posted).filter((m) => m.type === 'encode');
 }
 
+/** The browser asks to save data (Chrome's Save-Data / Lite mode). */
+function dataSaver() {
+  vi.stubGlobal('navigator', { ...navigator, connection: { saveData: true } });
+}
+
 /** The service worker's cache, holding `files` OCR model files. */
 function cachedModels(files: number) {
   vi.stubGlobal('caches', {
@@ -93,7 +98,17 @@ afterEach(() => {
 });
 
 describe('export cache', () => {
-  it('does not download OCR models in the background', async () => {
+  it('reads text in the background, downloading the models, unless saving data', async () => {
+    cachedModels(0);
+    const cache = await import('../src/lib/exportCache');
+    cache.prefetchExports([page], DEFAULT_SETTINGS);
+    await vi.waitFor(() => expect(ocrWorkers()).toHaveLength(1));
+    expect(encodes()[0].ocrEdge).toBeDefined();
+    expect(cache.prefetchReadsText()).toBe(true);
+  });
+
+  it('does not download OCR models in the background with data saver on', async () => {
+    dataSaver();
     cachedModels(1);
     const cache = await import('../src/lib/exportCache');
     cache.prefetchExports([page], DEFAULT_SETTINGS);
@@ -212,6 +227,7 @@ describe('export cache', () => {
   });
 
   it('counts a page as rendered, not read, when its text is not read in the background', async () => {
+    dataSaver();
     cachedModels(0);
     const cache = await import('../src/lib/exportCache');
     cache.prefetchExports([page], DEFAULT_SETTINGS);

@@ -187,7 +187,9 @@
 
   function tileState(page: Page) {
     const phase = phaseOf(page, settings);
-    const progress = phaseProgress(phase, backgroundText);
+    // With OCR on, a page is only ready once its text is read too: a page
+    // rendered without it is rendered again (with text) when saving.
+    const progress = phaseProgress(phase, settings.ocr);
     return {
       progress,
       busy: phase === 'rendering' || phase === 'reading',
