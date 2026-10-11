@@ -4,6 +4,11 @@ import { isConvex } from './quad';
 /** Search band either side of each edge, as a fraction of the image's long edge. */
 const SEARCH = 0.025;
 const SAMPLES_PER_EDGE = 48;
+/** A corner from the half-side fits this far (px) from the whole-side one is on a bowed sheet. */
+const BOWED = 1.5;
+/** Local mode: extra samples per end between LOCAL_T0 and the usual start. */
+const LOCAL_EXTRA = 6;
+const LOCAL_T0 = 0.04;
 
 function sample(img: FloatImage, x: number, y: number): number {
   const { width: w, height: h, data } = img;
@@ -22,7 +27,7 @@ function sample(img: FloatImage, x: number, y: number): number {
   );
 }
 
-interface Line {
+export interface Line {
   /** Point on the line. */
   px: number;
   py: number;
@@ -32,7 +37,7 @@ interface Line {
 }
 
 /** Total-least-squares line through weighted points. */
-function fitLine(points: { x: number; y: number; w: number }[]): Line | null {
+export function fitLine(points: { x: number; y: number; w: number }[]): Line | null {
   let sw = 0;
   let mx = 0;
   let my = 0;
@@ -58,11 +63,34 @@ function fitLine(points: { x: number; y: number; w: number }[]): Line | null {
   return { px: mx, py: my, dx: Math.cos(angle), dy: Math.sin(angle) };
 }
 
-function intersect(a: Line, b: Line): Point | null {
+export function intersectLines(a: Line, b: Line): Point | null {
   const den = a.dx * b.dy - a.dy * b.dx;
   if (Math.abs(den) < 1e-6) return null;
   const t = ((b.px - a.px) * b.dy - (b.py - a.py) * b.dx) / den;
   return [a.px + t * a.dx, a.py + t * a.dy];
+}
+
+/**
+ * A line fitted to points with outliers (text, shadows, a pin) rejected by
+ * their distance to a first fit, twice. Null with fewer than `minInliers`
+ * points left.
+ */
+export function robustFit(
+  points: { x: number; y: number; w: number }[],
+  minInliers: number,
+): Line | null {
+  if (points.length < minInliers) return null;
+  let line = fitLine(points);
+  for (let pass = 0; pass < 2 && line; pass++) {
+    const l: Line = line;
+    const residuals = points.map((h) => Math.abs((h.x - l.px) * -l.dy + (h.y - l.py) * l.dx));
+    const sorted = [...residuals].sort((a, b) => a - b);
+    const cutoff = Math.max(1.5, sorted[Math.floor(sorted.length / 2)] * 3);
+    const inliers = points.filter((_, i) => residuals[i] <= cutoff);
+    if (inliers.length < minInliers) return null;
+    line = fitLine(inliers);
+  }
+  return line;
 }
 
 /**
@@ -78,19 +106,31 @@ function intersect(a: Line, b: Line): Point | null {
  * `gray` is a luma image; `quad` is in its pixel-edge coordinates. A quad
  * that is already close (from the edge search) takes a narrow `reach`, so
  * that a strong edge just inside the page (a dark band's) cannot pull it in.
+ *
+ * With `local`, a corner where lines fitted to the halves of its two sides
+ * nearest to it cross clearly elsewhere than the whole sides' lines (by more
+ * than BOWED) is put there: a sheet pinned to a wall bows and sags, and a
+ * line through a whole curved side misses both of its corners. On a flat
+ * page the halves agree with the whole sides and nothing changes.
  */
 export function refineQuad(
   gray: FloatImage,
   quad: Quad,
   /** Search band either side, pixels (default: SEARCH of the long edge). */
   reach?: number,
+  { local = false }: { local?: boolean } = {},
 ): Quad {
   const band = reach ?? Math.max(4, Math.max(gray.width, gray.height) * SEARCH);
   const cx = quad.reduce((s, p) => s + p[0], 0) / 4;
   const cy = quad.reduce((s, p) => s + p[1], 0) / 4;
   const lines: (Line | null)[] = [];
+  /** Per side, the lines fitted to its first and second half (local only). */
+  const halves: [Line | null, Line | null][] = [];
+  // Stay clear of the corners, where the neighbouring edge interferes.
+  const t0 = 0.12;
 
   for (let e = 0; e < 4; e++) {
+    halves.push([null, null]);
     const [ax, ay] = quad[e];
     const [bx, by] = quad[(e + 1) % 4];
     const len = Math.hypot(bx - ax, by - ay);
@@ -110,12 +150,28 @@ export function refineQuad(
       ny = -ny;
     }
 
-    const hits: { x: number; y: number; w: number; s: number }[] = [];
+    const hits: {
+      x: number;
+      y: number;
+      w: number;
+      t: number;
+      core: boolean;
+    }[] = [];
     const steps = Math.ceil(band);
     const profile = new Float64Array(2 * steps + 1);
-    for (let k = 0; k < SAMPLES_PER_EDGE; k++) {
-      // Stay clear of the corners, where the neighbouring edge interferes.
-      const t = 0.12 + (0.76 * k) / (SAMPLES_PER_EDGE - 1);
+    // The whole side's samples; in local mode a few more towards the
+    // corners, for the halves only.
+    const ts: number[] = [];
+    for (let k = 0; k < SAMPLES_PER_EDGE; k++)
+      ts.push(t0 + ((1 - 2 * t0) * k) / (SAMPLES_PER_EDGE - 1));
+    if (local) {
+      for (let k = 0; k < LOCAL_EXTRA; k++) {
+        const t = LOCAL_T0 + ((t0 - LOCAL_T0) * k) / LOCAL_EXTRA;
+        ts.push(t, 1 - t);
+      }
+    }
+    for (const [k, t] of ts.entries()) {
+      const core = k < SAMPLES_PER_EDGE;
       const ox = ax + (bx - ax) * t - 0.5;
       const oy = ay + (by - ay) * t - 0.5;
       for (let s = -steps; s <= steps; s++) {
@@ -146,28 +202,34 @@ export function refineQuad(
         if (den < 0) offset = (0.5 * (l - r)) / den;
       }
       const s = best + offset;
-      hits.push({ x: ox + 0.5 + nx * s, y: oy + 0.5 + ny * s, w: bestScore, s });
+      hits.push({
+        x: ox + 0.5 + nx * s,
+        y: oy + 0.5 + ny * s,
+        w: bestScore,
+        t,
+        core,
+      });
     }
 
-    if (hits.length < SAMPLES_PER_EDGE / 3) {
+    const core = hits.filter((h) => h.core);
+    if (core.length < SAMPLES_PER_EDGE / 3) {
       lines.push(null);
       continue;
     }
-    // Reject outliers (text lines, shadows) by distance to a first fit, refit.
-    let line = fitLine(hits);
-    for (let pass = 0; pass < 2 && line; pass++) {
-      const l: Line = line;
-      const residuals = hits.map((h) => Math.abs((h.x - l.px) * -l.dy + (h.y - l.py) * l.dx));
-      const sorted = [...residuals].sort((a, b) => a - b);
-      const cutoff = Math.max(1.5, sorted[Math.floor(sorted.length / 2)] * 3);
-      const inliers = hits.filter((_, i) => residuals[i] <= cutoff);
-      if (inliers.length < SAMPLES_PER_EDGE / 4) {
-        line = null;
-        break;
-      }
-      line = fitLine(inliers);
+    lines.push(robustFit(core, SAMPLES_PER_EDGE / 4));
+    if (local) {
+      const half = SAMPLES_PER_EDGE / 6;
+      halves[e] = [
+        robustFit(
+          hits.filter((h) => h.t < 0.4),
+          half,
+        ),
+        robustFit(
+          hits.filter((h) => h.t > 0.6),
+          half,
+        ),
+      ];
     }
-    lines.push(line);
   }
 
   const refined: Point[] = [];
@@ -175,7 +237,12 @@ export function refineQuad(
     // Corner c sits between edge c-1 (into it) and edge c (out of it).
     const before = lines[(c + 3) % 4];
     const after = lines[c];
-    const p = before && after ? intersect(before, after) : null;
+    let p = before && after ? intersectLines(before, after) : null;
+    // A bowed side: the halves next to the corner put it clearly elsewhere.
+    const nearBefore = halves[(c + 3) % 4][1] ?? before;
+    const nearAfter = halves[c][0] ?? after;
+    const q = nearBefore && nearAfter ? intersectLines(nearBefore, nearAfter) : null;
+    if (q && (!p || Math.hypot(q[0] - p[0], q[1] - p[1]) > BOWED)) p = q;
     const original = quad[c];
     if (p && Math.hypot(p[0] - original[0], p[1] - original[1]) <= band * 1.5) refined.push(p);
     else refined.push(original);
