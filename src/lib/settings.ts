@@ -2,8 +2,25 @@ import type { FilterId } from './imaging/filters';
 
 export type Resolution = 'standard' | 'high' | 'max';
 
+export interface PaperlessSettings {
+  baseUrl: string;
+  token: string;
+  /**
+   * Tag ids from before tags were picked by name. Ids that could be matched
+   * to a name move to `tags` the next time the settings are saved; the rest
+   * stay here and are still sent with uploads.
+   */
+  tagIds: number[];
+  /** Default tags, by name. Optional only so older call sites still type-check. */
+  tags?: string[];
+  /** Default document type, by name. */
+  documentType?: string | null;
+  /** Default correspondent, by name. */
+  correspondent?: string | null;
+}
+
 export interface AppSettings {
-  paperless: { baseUrl: string; token: string; tagIds: number[] };
+  paperless: PaperlessSettings;
   defaultFilter: FilterId;
   autoCapture: boolean;
   resolution: Resolution;
@@ -23,7 +40,14 @@ export const RESOLUTION_LONG_EDGE: Record<Resolution, number> = {
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  paperless: { baseUrl: '', token: '', tagIds: [] },
+  paperless: {
+    baseUrl: '',
+    token: '',
+    tagIds: [],
+    tags: [],
+    documentType: null,
+    correspondent: null,
+  },
   defaultFilter: 'document',
   autoCapture: true,
   resolution: 'high',
@@ -34,6 +58,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 const KEY = 'doc-scanner.settings.v2';
 const FILTERS: FilterId[] = ['document', 'bw', 'gray', 'color', 'original'];
+
+function nameOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
 
 export function loadSettings(): AppSettings {
   try {
@@ -46,6 +74,11 @@ export function loadSettings(): AppSettings {
         baseUrl: typeof p.baseUrl === 'string' ? p.baseUrl : '',
         token: typeof p.token === 'string' ? p.token : '',
         tagIds: Array.isArray(p.tagIds) ? p.tagIds.filter((n) => Number.isInteger(n) && n > 0) : [],
+        tags: Array.isArray(p.tags)
+          ? [...new Set(p.tags.filter((t) => typeof t === 'string' && t.trim() !== ''))]
+          : [],
+        documentType: nameOrNull(p.documentType),
+        correspondent: nameOrNull(p.correspondent),
       },
       defaultFilter: FILTERS.includes(s.defaultFilter as FilterId)
         ? (s.defaultFilter as FilterId)
