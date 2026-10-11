@@ -37,6 +37,12 @@ export interface HistoryEntry {
   taskId?: string;
   /** A small JPEG of the first page, for the list. Older entries have none. */
   thumb?: Blob;
+  /**
+   * For uploads waiting in the offline queue (see uploadQueue.ts): set while
+   * the server could not be reached, cleared once it took the file. Such an
+   * entry has no `outcome` yet.
+   */
+  queued?: { since: number; attempts: number; lastError: string | null };
 }
 
 const DB_NAME = 'doc-scanner';
