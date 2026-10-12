@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  /** The title suggestion last dismissed, remembered while the app is open. */
+  let dismissedSuggestion: string | null = null;
+</script>
+
 <script lang="ts">
   import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
@@ -13,7 +18,7 @@
   } from '../lib/exportStatus.svelte';
   import { FILTERS } from '../lib/filters';
   import { haptic } from '../lib/haptics';
-  import { recordHistory, updateHistory } from '../lib/history';
+  import { keepPages, recordHistory, updateHistory } from '../lib/history';
   import type { FilterId } from '../lib/imaging/filters';
   import { isBlurred } from '../lib/imaging/sharpness';
   import { isConfigured, waitForTask } from '../lib/paperless';
@@ -143,6 +148,17 @@
   /** Whether a PDF's text is read in the background (else it is read when saving). */
   const backgroundText = $derived(settings.ocr && readsTextInBackground());
   const pdfState = $derived(readiness(session.pages, settings, settings.ocr));
+  /**
+   * How far the background preparation has got, for the line under the
+   * title: "OCR 40 %" while text is read ("Preparing" with OCR off), then
+   * "Ready". Nothing while an export runs (its progress is in the notice).
+   */
+  const prepStatus = $derived.by(() => {
+    if (ui.task || session.pages.length === 0) return null;
+    if (pdfState.ready) return { text: 'Ready', done: true };
+    const pct = Math.floor(pdfState.progress * 100);
+    return { text: `${settings.ocr ? 'OCR' : 'Preparing'} ${pct}%`, done: false };
+  });
   const uploadState = $derived(readiness(session.pages, settings, false));
 
   interface Badge {
@@ -202,7 +218,11 @@
   /* ---------------------------------------------------- suggested title ---- */
 
   let suggested = $state<{ pageId: string; text: string } | null>(null);
-  let dismissed = $state<string | null>(null);
+  // Kept across visits to this screen: a dismissed suggestion stays dismissed.
+  let dismissed = $state<string | null>(dismissedSuggestion);
+  $effect(() => {
+    dismissedSuggestion = dismissed;
+  });
   const first = $derived(session.pages[0]);
   const firstRead = $derived(!!first && settings.ocr && phaseOf(first, settings) === 'read');
 
@@ -435,7 +455,7 @@
       } catch (error) {
         if (!shouldQueue(error)) throw error;
         // Paperless cannot be reached: keep it and send it once it can.
-        await queueUpload({
+        const queued = await queueUpload({
           title: docTitle,
           pages: pages.length,
           pdf,
@@ -444,6 +464,8 @@
           thumb,
           error,
         });
+        // Keep its pages too, so it can be edited again like any other entry.
+        void keepPages(queued, pages);
         haptic('success');
         finished(target, 'Paperless is unreachable; it will be sent when it is back.');
         return;
@@ -781,6 +803,11 @@
       <!-- Always one line high: a suggestion appearing never moves the pages. -->
       <div class="subtitle">
         <span class="pages">{plural(session.pages.length)}</span>
+        {#if prepStatus}
+          <span class="readiness" class:done={prepStatus.done} aria-live="polite"
+            >{prepStatus.text}</span
+          >
+        {/if}
         {#if suggestion && !selecting}
           <span class="sep" aria-hidden="true">·</span>
           <button
@@ -818,6 +845,21 @@
           </button>
         {/each}
       </div>
+      <select
+        class="filter-select"
+        aria-label={selecting ? 'Filter for the selected pages' : 'Filter for all pages'}
+        disabled={filterPages.length === 0}
+        value={filterPages.length > 0 ? (commonFilter ?? '') : ''}
+        onchange={(e) => {
+          const f = FILTERS.find((x) => x.id === e.currentTarget.value);
+          if (f) applyToAll(f.id, f.label);
+        }}
+      >
+        {#if !commonFilter}<option value="" disabled>Mixed filters</option>{/if}
+        {#each FILTERS as f (f.id)}
+          <option value={f.id}>{f.label}</option>
+        {/each}
+      </select>
     </div>
 
     <div class="grid column" class:selecting bind:this={grid} onscroll={measureScroll}>
@@ -923,7 +965,6 @@
       </button>
       <button
         class="icon ghost export"
-        style:--progress={uploadBadge.text === 'ready' ? 0 : uploadBadge.progress}
         onclick={() => void upload()}
         disabled={!!ui.task}
         aria-label={uploadBadge.text
@@ -936,7 +977,6 @@
       <button
         class="icon export download"
         class:primary={!sharing}
-        style:--progress={!sharing && pdfBadge.text !== 'ready' ? pdfBadge.progress : 0}
         onclick={() => void save(true)}
         disabled={!!ui.task}
         aria-label="Download PDF"
@@ -949,7 +989,6 @@
         <!-- Open with another app (the share sheet): the usual way out. -->
         <button
           class="icon primary export share"
-          style:--progress={pdfBadge.text === 'ready' ? 0 : pdfBadge.progress}
           onclick={() => void save()}
           disabled={!!ui.task}
           aria-label="Share PDF"
@@ -1097,6 +1136,20 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Preparation status, at the right end of the line. */
+  .readiness {
+    order: 10;
+    margin-left: auto;
+    padding-left: var(--s-3);
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-2);
+  }
+
+  .readiness.done {
+    color: var(--good);
+  }
+
   .sep {
     flex: 0 0 auto;
     padding: 0 2px;
@@ -1195,7 +1248,7 @@
     position: absolute;
     inset: 8px 14px;
     border-radius: var(--r-xs);
-    background: var(--surface);
+    background: var(--sheet);
     box-shadow: var(--shadow-paper);
   }
 
@@ -1215,7 +1268,7 @@
       linear-gradient(var(--line), var(--line)) 12px 30px / 60% 2px no-repeat,
       linear-gradient(var(--line), var(--line)) 12px 38px / 55% 2px no-repeat,
       linear-gradient(var(--line), var(--line)) 12px 46px / 60% 2px no-repeat,
-      var(--surface);
+      var(--sheet);
   }
 
   .empty h1 {
@@ -1479,43 +1532,35 @@
     min-height: 48px;
     min-width: 48px;
     max-width: 220px;
+    padding-inline: var(--s-4);
+    gap: var(--s-2);
   }
 
   .actions .download:not(.primary) {
     max-width: 180px;
   }
 
-  /* On the narrowest phones Download is its icon alone (its accessible name stays). */
-  @media (max-width: 374px) {
-    .actions .download:not(.primary) {
-      flex: 0 0 auto;
-    }
+  /*
+   * Labelled bottom-bar buttons keep comfortable padding; when a button
+   * gets too narrow for its label with that padding, it shows its icon
+   * alone (its accessible name stays).
+   */
+  .export {
+    white-space: nowrap;
+    container-type: inline-size;
+  }
 
-    .actions .download:not(.primary) .label {
+  /* Icon 22 + gap 8 + label + 16 px each side. */
+  @container (max-width: 136px) {
+    .download .label {
       display: none;
     }
   }
 
-  /* An export being prepared: a hairline along the button's bottom edge. */
-  .export {
-    position: relative;
-    overflow: hidden;
-    white-space: nowrap;
-  }
-
-  .export::after {
-    content: '';
-    position: absolute;
-    left: 12px;
-    right: 12px;
-    bottom: 5px;
-    height: 2px;
-    border-radius: 1px;
-    transform-origin: left;
-    transform: scaleX(var(--progress, 0));
-    background: currentColor;
-    opacity: 0.45;
-    transition: transform var(--dur-3) var(--ease);
+  @container (max-width: 104px) {
+    .share .label {
+      display: none;
+    }
   }
 
   .tools {
@@ -1529,8 +1574,10 @@
     gap: 2px;
     min-width: 0;
     min-height: 52px;
-    padding: 4px 2px;
+    padding: 4px var(--s-1);
     font-size: var(--fs-micro);
+    white-space: nowrap;
+    container-type: inline-size;
     font-weight: 500;
     letter-spacing: 0.01em;
   }
@@ -1557,5 +1604,17 @@
 
   .split .dialog-actions .cancel {
     margin-right: auto;
+  }
+
+  /* A label that would touch the button's edges goes; the icon and the
+     accessible name stay. */
+  @container (max-width: 40px) {
+    .tools .icon > span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
   }
 </style>

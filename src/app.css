@@ -7,6 +7,8 @@
   /* Colour: dark. */
   --bg: #121211;
   --surface: #1c1c1b;
+  /* Paper drawn on the desk, e.g. the empty-state sheets. */
+  --sheet: #3b3b38;
   --fill: #2a2a28;
   --fill-strong: #353533;
   --line: rgb(255 255 255 / 11%);
@@ -83,6 +85,7 @@
   :root {
     --bg: #f3f2ef;
     --surface: #ffffff;
+    --sheet: #ffffff;
     --fill: #e8e7e3;
     --fill-strong: #dcdbd6;
     --line: rgb(0 0 0 / 9%);
@@ -382,14 +385,34 @@ svg.i {
   font-weight: 650;
 }
 
-/* Narrow phones: tighter chips; a row that still overflows fades at its end. */
+/*
+ * Filter choice on narrow phones: the five chips do not fit, so a compact
+ * picker (the system's own list) takes their place instead of a scrolling row.
+ */
+.filter-select {
+  display: none;
+}
+
 @media (max-width: 374px) {
-  .chip {
-    padding: 0 10px;
+  .chips.filters {
+    display: none;
   }
 
-  .chips {
-    mask-image: linear-gradient(to left, transparent, #000 var(--s-8));
+  .filter-select {
+    display: block;
+    min-height: 36px;
+    padding: 0 32px 0 14px;
+    border: none;
+    border-radius: var(--r-full);
+    font: inherit;
+    font-size: var(--fs-caption);
+    font-weight: 650;
+    color: var(--text);
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+        no-repeat right 12px center,
+      var(--fill);
+    appearance: none;
   }
 }
 
