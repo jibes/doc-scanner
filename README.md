@@ -1,5 +1,13 @@
 # Doc Scanner
 
+> **Retired: scanning now lives in [Tessel](https://github.com/jibes/doc-reader).**
+> Tessel 1.3 has this scanner built in, with the same engine (live page detection, auto-capture, the
+> Document / B&W / Grey / Colour filters, on-device PaddleOCR, searchable PDFs) next to a PDF and EPUB
+> reader and a file browser. Use the web app at **https://jibes.github.io/doc-reader/** or install the
+> Android app from its [Releases](https://github.com/jibes/doc-reader/releases) (Obtainium works too).
+> For Paperless-ngx, save scans into Paperless's consume folder. This repository is archived; the text
+> below describes the app as it was.
+
 A phone-camera document scanner that runs entirely in the browser and files
 multi-page PDFs into a self-hosted
 [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx) instance.
