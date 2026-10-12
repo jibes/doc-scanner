@@ -67,47 +67,125 @@ function encodePng(size, rgba) {
 
 /* ---------------------------------------------------------------- scene ---- */
 
-const BG_TOP = [32, 32, 36];
-const BG_BOTTOM = [10, 10, 10];
-const PAGE = [255, 255, 255];
-const LINE = [170, 170, 176];
-const ACCENT = [59, 130, 246];
+/*
+ * A page lying slightly askew on a dark desk, one corner dog-eared, framed by
+ * four straight crop brackets: what the app does — find the edges, straighten
+ * the page. Colours follow src/app.css (desk, paper, accent).
+ */
+const DESK_TOP = [38, 37, 34];
+const DESK_BOTTOM = [14, 14, 13];
+const PAPER = [250, 249, 245];
+const FOLD = [214, 211, 202];
+const INK = [176, 173, 165];
+const ACCENT = [77, 124, 240];
 
-/** Rounded-rectangle hit test in normalised coordinates. */
-function inRoundedRect(x, y, x0, y0, x1, y1, r) {
-  if (x < x0 || x > x1 || y < y0 || y > y1) return false;
-  const cx = Math.min(Math.max(x, x0 + r), x1 - r);
-  const cy = Math.min(Math.max(y, y0 + r), y1 - r);
-  const dx = x - cx;
-  const dy = y - cy;
-  return dx * dx + dy * dy <= r * r;
+const PAGE_CX = 0.5;
+const PAGE_CY = 0.52;
+const PAGE_HW = 0.2;
+const PAGE_HH = 0.27;
+const PAGE_R = 0.018;
+const TILT = (-7 * Math.PI) / 180;
+const EAR = 0.1;
+
+/** Lines of text as [v, from u, to u], in page coordinates. */
+const TEXT = [
+  [-0.15, -0.13, 0.0],
+  [-0.06, -0.13, 0.13],
+  [0.0, -0.13, 0.13],
+  [0.06, -0.13, 0.08],
+  [0.15, -0.13, 0.13],
+  [0.21, -0.13, 0.03],
+];
+const TEXT_HALF = 0.011;
+
+/** Bracket corners and arm length, in icon coordinates. */
+const FRAME = { x0: 0.21, y0: 0.17, x1: 0.79, y1: 0.87, arm: 0.12, half: 0.019 };
+
+/** Signed distance to a rounded box centred on the origin. */
+function roundBox(u, v, hw, hh, r) {
+  const qx = Math.abs(u) - hw + r;
+  const qy = Math.abs(v) - hh + r;
+  const outside = Math.hypot(Math.max(qx, 0), Math.max(qy, 0));
+  return outside + Math.min(Math.max(qx, qy), 0) - r;
+}
+
+/** Distance from a point to a line segment. */
+function segment(x, y, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(x - ax - t * dx, y - ay - t * dy);
+}
+
+function mix(a, b, t) {
+  return [0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * t);
+}
+
+/** Into page coordinates: centred, untilted; v grows downwards. */
+function toPage(x, y) {
+  const dx = x - PAGE_CX;
+  const dy = y - PAGE_CY;
+  const c = Math.cos(-TILT);
+  const s = Math.sin(-TILT);
+  return [dx * c - dy * s, dx * s + dy * c];
+}
+
+function inBracket(x, y) {
+  const { x0, y0, x1, y1, arm, half } = FRAME;
+  const corners = [
+    [x0, y0, 1, 1],
+    [x1, y0, -1, 1],
+    [x0, y1, 1, -1],
+    [x1, y1, -1, -1],
+  ];
+  return corners.some(
+    ([cx, cy, sx, sy]) =>
+      segment(x, y, cx, cy, cx + sx * arm, cy) <= half ||
+      segment(x, y, cx, cy, cx, cy + sy * arm) <= half,
+  );
 }
 
 function sample(x, y, maskable) {
-  // Maskable icons are cropped to a circle by the launcher, so the background
-  // fills the whole square and the artwork shrinks into the safe zone.
-  if (!inRoundedRect(x, y, 0, 0, 1, 1, maskable ? 0 : 0.22)) return [0, 0, 0, 0];
+  // Maskable icons are cropped by the launcher, so the desk fills the whole
+  // square and the artwork shrinks into the safe zone.
+  if (roundBox(x - 0.5, y - 0.5, 0.5, 0.5, maskable ? 0 : 0.22) > 0) return [0, 0, 0, 0];
 
-  const t = y;
-  let colour = [
-    Math.round(BG_TOP[0] + (BG_BOTTOM[0] - BG_TOP[0]) * t),
-    Math.round(BG_TOP[1] + (BG_BOTTOM[1] - BG_TOP[1]) * t),
-    Math.round(BG_TOP[2] + (BG_BOTTOM[2] - BG_TOP[2]) * t),
-  ];
+  // The desk: a soft pool of light behind the page.
+  const glow = Math.max(0, 1 - Math.hypot(x - 0.5, y - 0.42) / 0.75);
+  let colour = mix(DESK_BOTTOM, DESK_TOP, Math.min(1, glow * 1.25));
 
-  const scale = maskable ? 0.6 : 0.84;
+  const scale = maskable ? 0.74 : 1;
   const px = (x - 0.5) / scale + 0.5;
   const py = (y - 0.5) / scale + 0.5;
+  const [u, v] = toPage(px, py);
 
-  if (inRoundedRect(px, py, 0.3, 0.17, 0.7, 0.83, 0.04)) {
-    colour = PAGE;
-    for (const lineY of [0.3, 0.4, 0.5, 0.6]) {
-      if (px > 0.36 && px < 0.64 && py > lineY - 0.013 && py < lineY + 0.013) colour = LINE;
+  // How far into the dog-ear's square, measured from the cut diagonal.
+  const ear = PAGE_HW - u + (v + PAGE_HH);
+  const cut = ear < EAR;
+  const page = roundBox(u, v, PAGE_HW, PAGE_HH, PAGE_R);
+
+  // A soft shadow, cast down and to the right.
+  const [su, sv] = toPage(px - 0.012, py - 0.03);
+  const shadow = roundBox(su, sv, PAGE_HW, PAGE_HH, PAGE_R);
+  if (shadow < 0.06) colour = mix(colour, [0, 0, 0], 0.55 * (1 - Math.max(0, shadow) / 0.06));
+
+  if (page <= 0 && !cut) {
+    colour = PAPER;
+    const flap = u >= PAGE_HW - EAR && v <= -PAGE_HH + EAR;
+    if (flap) {
+      colour = FOLD;
+      // A hairline where the paper folds over.
+      if (ear < EAR + 0.008) colour = mix(FOLD, INK, 0.6);
+    } else {
+      for (const [lv, from, to] of TEXT) {
+        if (segment(u, v, from, lv, to, lv) <= TEXT_HALF) colour = INK;
+      }
     }
-    if (px > 0.3 && px < 0.7 && py > 0.685 && py < 0.715) colour = ACCENT;
   }
 
-  return [colour[0], colour[1], colour[2], 255];
+  if (inBracket(px, py)) colour = ACCENT;
+
+  return [Math.round(colour[0]), Math.round(colour[1]), Math.round(colour[2]), 255];
 }
 
 /** Render with 4x4 supersampling so the rounded corners are not jagged. */

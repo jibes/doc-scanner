@@ -288,6 +288,16 @@
         </button>
       {/each}
     </div>
+    <select
+      class="filter-select"
+      aria-label="Filter"
+      value={filter}
+      onchange={(e) => setFilter(e.currentTarget.value as FilterId)}
+    >
+      {#each FILTERS as f (f.id)}
+        <option value={f.id}>{f.label}</option>
+      {/each}
+    </select>
 
     {#if session.pages.length > 1 && differing > 0}
       <button class="text apply-all" onclick={applyToAll}>
@@ -536,8 +546,10 @@
     gap: 2px;
     min-width: 0;
     min-height: 52px;
-    padding: 4px 2px;
+    padding: 4px var(--s-1);
     font-size: var(--fs-micro);
+    white-space: nowrap;
+    container-type: inline-size;
     font-weight: 500;
     letter-spacing: 0.01em;
   }
@@ -560,5 +572,17 @@
 
   .quiet {
     color: var(--text-2);
+  }
+
+  /* A label that would touch the button's edges goes; the icon and the
+     accessible name stay. */
+  @container (max-width: 40px) {
+    .tools .icon > span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
   }
 </style>
