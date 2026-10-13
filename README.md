@@ -410,5 +410,5 @@ allows only the app's own scripts and network requests to https servers (plus
 
 ## Licence
 
-See `THIRD_PARTY_NOTICES.md` for bundled components. The DocAligner and PaddleOCR
-models are Apache-2.0. No licence has been chosen for this project's own code yet.
+[GPL-3.0-or-later](LICENSE). See `THIRD_PARTY_NOTICES.md` for bundled components.
+The DocAligner and PaddleOCR models are Apache-2.0.
