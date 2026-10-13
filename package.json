@@ -2,6 +2,7 @@
   "name": "doc-scanner",
   "private": true,
   "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "description": "Phone-camera document scanner PWA that produces clean, searchable, small PDFs for a self-hosted Paperless-ngx instance.",
   "scripts": {
