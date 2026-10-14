@@ -336,6 +336,17 @@ svg.i {
   white-space: nowrap;
 }
 
+.retired {
+  flex: 0 0 auto;
+  margin: 0 0 var(--s-2);
+  font-size: var(--fs-caption);
+  color: var(--warn);
+}
+
+.retired a {
+  color: inherit;
+}
+
 .bottombar {
   display: flex;
   align-items: center;

@@ -774,6 +774,10 @@
       </button>
     {/if}
   </header>
+  <p class="column retired" role="note">
+    Doc Scanner is discontinued. Scanning lives on in
+    <a href="https://jibes.github.io/doc-reader/">Tessel</a>.
+  </p>
 
   {#if session.pages.length === 0}
     <div class="empty column">
