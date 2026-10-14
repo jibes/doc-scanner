@@ -1,6 +1,6 @@
 # Doc Scanner
 
-> **Retired: scanning now lives in [Tessel](https://github.com/jibes/doc-reader).**
+> **Discontinued: scanning now lives in [Tessel](https://github.com/jibes/doc-reader).**
 > Tessel 1.3 has this scanner built in, with the same engine (live page detection, auto-capture, the
 > Document / B&W / Grey / Colour filters, on-device PaddleOCR, searchable PDFs) next to a PDF and EPUB
 > reader and a file browser. Use the web app at **https://jibes.github.io/doc-reader/** or install the

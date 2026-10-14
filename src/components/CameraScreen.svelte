@@ -514,6 +514,7 @@
       <button class="icon round" onclick={onClose} aria-label="Close camera">
         <Icon name="close" />
       </button>
+      <a class="retired" href="https://jibes.github.io/doc-reader/">Discontinued · use Tessel</a>
       <div class="top-right">
         {#if torchAvailable}
           <button
@@ -674,6 +675,16 @@
     gap: var(--s-2);
     padding: calc(var(--s-3) + var(--safe-top)) var(--s-4) var(--s-6);
     background: linear-gradient(rgb(0 0 0 / 45%), transparent);
+  }
+
+  .retired {
+    padding: var(--s-1) var(--s-3);
+    border-radius: var(--r-full);
+    background: rgb(0 0 0 / 38%);
+    color: #fff;
+    font-size: var(--fs-caption);
+    text-decoration: none;
+    white-space: nowrap;
   }
 
   .top-right {
